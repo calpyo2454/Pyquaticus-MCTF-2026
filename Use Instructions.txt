@@ -1,0 +1,10 @@
+Steps for startup:
+    1. Enter repository space
+        cd Pyquaticus-MCTF-2026
+    2. Activate the /data/CS-491/Pyquaticus-MCTF-2026/env-full environment
+        conda activate /data/CS-491/Pyquaticus-MCTF-2026/env-full
+    3. Test that environment works and can run scripts
+        cd rl_test
+        python train_3v3.py
+        python ./deploy_3v3.py ./ray_test/iter_0/policies/agent-0-policy ./ray_test/iter_0/policies/agent-1-policy ./ray_test/iter_0/policies/agent-2-policy
+

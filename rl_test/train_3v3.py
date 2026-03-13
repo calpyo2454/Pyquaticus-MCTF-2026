@@ -108,9 +108,39 @@ if __name__ == '__main__':
                 #'easy-attack-policy': (AttackGen(3, Team.RED_TEAM, 'easy', 2, env.par_env.agent_obs_normalizer), obs_space, act_space, {})}
     env.close()
     #Not using the Alpha Rllib (api_stack False) 
-    ppo_config = PPOConfig().api_stack(enable_rl_module_and_learner=False, enable_env_runner_and_connector_v2=False).environment(env='pyquaticus').env_runners(num_env_runners=1, num_cpus_per_env_runner=1)
+    #ppo_config = PPOConfig().api_stack(enable_rl_module_and_learner=False, enable_env_runner_and_connector_v2=False).environment(env='pyquaticus').env_runners(num_env_runners=1, num_cpus_per_env_runner=1)
+    
+    NUM_GPUS = 0
+
+    ppo_config = (
+        PPOConfig()
+        .api_stack(enable_rl_module_and_learner=False, enable_env_runner_and_connector_v2=False)
+        .environment(env='pyquaticus')
+        .env_runners(num_env_runners=4, num_cpus_per_env_runner=1)
+        .resources(num_gpus=NUM_GPUS)
+        .framework("torch")
+    )
+
+    ppo_config.update_from_dict({
+        "train_batch_size": 2048,
+        "sgd_minibatch_size": 256,
+        "num_sgd_iter": 8,
+        "lr": 3e-4,
+        "gamma": 0.99,
+        "lambda": 0.95,
+        "clip_param": 0.2,
+        "grad_clip": 0.5,
+        "vf_clip_param": 10.0
+    })
+
+    ppo_config = ppo_config.multi_agent(
+        policies=policies,
+        policy_mapping_fn=policy_mapping_fn,
+        policies_to_train=["agent-0-policy", "agent-1-policy", "agent-2-policy"],
+    )
+
     #If your system allows changing the number of rollouts can significantly reduce training times (num_rollout_workers=15)
-    ppo_config.multi_agent(policies=policies, policy_mapping_fn=policy_mapping_fn, policies_to_train=["agent-0-policy", "agent-1-policy", "agent-2-policy"],)
+    #ppo_config.multi_agent(policies=policies, policy_mapping_fn=policy_mapping_fn, policies_to_train=["agent-0-policy", "agent-1-policy", "agent-2-policy"],)
     algo = ppo_config.build_algo()
     start = 0
     end = 0
