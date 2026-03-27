@@ -7,4 +7,13 @@ Steps for startup:
         cd rl_test
         python train_3v3.py
         python ./deploy_3v3.py ./ray_test/iter_0/policies/agent-0-policy ./ray_test/iter_0/policies/agent-1-policy ./ray_test/iter_0/policies/agent-2-policy
-
+    4. Run Smoke test for Hierarchical Checkpoint training and evaluation:
+        PYTHONPATH=. python rl_test/train_hierarchical_roles_3v3.py \
+        --iterations 2 \
+        --checkpoint-every 1 \
+        --role-period 5
+        
+        PYTHONPATH=. python rl_test/eval_hierarchical_roles_3v3.py \
+        --checkpoint /data/CS-491/Pyquaticus-MCTF-2026/hierarchical_checkpoints \
+        --episodes 2 \
+        --role-period 5
