@@ -141,7 +141,7 @@ def main():
     """
     parser = argparse.ArgumentParser()
     parser.add_argument("--iterations", type=int, default=500)
-    parser.add_argument("--save-dir", type=str, default="./hierarchical_checkpoints")
+    parser.add_argument("--save-dir", type=str, default="./hierarchical_checkpoints/baseline_checkpoints")
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--checkpoint-every", type=int, default=50)
     parser.add_argument("--role-period", type=int, default=10)
@@ -196,10 +196,10 @@ def main():
         .api_stack(enable_rl_module_and_learner=False, enable_env_runner_and_connector_v2=False)
         .environment(env="pyquaticus_hierarchical_roles_3v3", env_config=env_config)
         .env_runners(
-            num_env_runners=0,
+            num_env_runners=3,
             num_cpus_per_env_runner=1,
             num_envs_per_env_runner=1,
-            rollout_fragment_length=1000,
+            rollout_fragment_length=300,
         )
         .resources(
             num_gpus=0,
@@ -208,9 +208,9 @@ def main():
         .framework("torch")
         .debugging(log_level="ERROR")
         .training(
-            train_batch_size=8192,
-            minibatch_size=256,
-            num_epochs=15,
+            train_batch_size=4500,
+            minibatch_size=512,
+            num_epochs=8,
             lr=3e-4,
             gamma=0.995,
             lambda_=0.98,

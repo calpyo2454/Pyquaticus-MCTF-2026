@@ -167,8 +167,10 @@ def evaluate_episode(algo, env, render: bool = False):
                 role_id = info.get(aid, {}).get("role_id", ATTACK)
                 role_counts[aid][role_id] += 1
 
-                reason = info.get(aid, {}).get("commander_reason", "UNKNOWN")
-                commander_reasons[reason] = commander_reasons.get(reason, 0) + 1
+        # Count commander reason once per step, using agent_0 as representative.
+        reason = info.get("agent_0", {}).get("commander_reason", None)
+        if reason is not None:
+            commander_reasons[reason] = commander_reasons.get(reason, 0) + 1
 
         steps += 1
 

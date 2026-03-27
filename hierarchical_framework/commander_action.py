@@ -73,14 +73,32 @@ class ScriptedCommander:
 
     def __init__(self, blue_team: List[str], red_team: List[str]):
         """
-        Store which agents belong to each team.
+        Store team membership and initialize a simple formation cycle.
 
-        Context:
-        - The wrapper calls this commander for blue team role assignment.
-        - Team membership is needed to inspect carriers, threats, and distances.
+        Why this method exists:
+        - The scripted commander should not stay in one formation forever when
+        the game state is quiet.
+        - Cycling formations is a deliberate baseline trick that helps verify
+        the shared worker actually responds to role changes.
         """
         self.blue_team = list(blue_team)
         self.red_team = list(red_team)
+
+        # Counts how many commander decisions have been made.
+        self.decision_count = 0
+
+        # Cycle through a few legal formations when no high-priority event is present.
+        self.default_cycle = [0, 1, 2, 5]  # balanced, offense, defense, aggressive pressure
+        self.default_cycle_reason = {
+            0: "BALANCED_DEFAULT",
+            1: "OFFENSE_CYCLE",
+            2: "DEFENSE_CYCLE",
+            5: "PRESSURE_CYCLE",
+        }
+
+        # Hold each default formation for a few commander refreshes before switching.
+        # With role_period=5 and default_hold=3, each formation lasts 15 env steps.
+        self.default_hold = 3
 
     def _idx(self, agents: List[str], agent_id: str) -> int:
         """
@@ -168,40 +186,44 @@ class ScriptedCommander:
         """
         Pick a role configuration index using a small rule tree.
 
-        Returns:
-        - config index into ROLE_CONFIGS
-        - a human-readable reason string for debugging
+        Priority:
+        1) If blue has the enemy flag -> defense tilt / escort return
+        2) If red has blue's flag -> chase / recovery
+        3) If red pressure is high on blue side -> heavy defense
+        4) Otherwise cycle through several safe default formations
 
         Why this method exists:
-        - The wrapper wants a compact tactical mode.
-        - The GUI/eval code can log why the scripted commander made a choice.
-
-        Important implementation note:
-        - We avoid depending on state["team_has_flag"] because some local
-        Pyquaticus branches do not expose that key at reset.
-        - Instead, we infer team-level possession from per-agent flag carriers.
+        - The previous version stayed in BALANCED_DEFAULT too often.
+        - This version intentionally varies the commander output even when no
+        flag event has happened yet, which is useful for testing whether the
+        shared worker obeys role conditioning.
         """
+        self.decision_count += 1
+
         blue_carrier = self._find_flag_carrier(state, agents, self.blue_team)
         red_carrier = self._find_flag_carrier(state, agents, self.red_team)
 
         blue_has_flag = blue_carrier is not None
         red_has_flag = red_carrier is not None
 
-        # If blue has the enemy flag, protect the return.
+        # High-priority event: blue is returning with flag.
         if blue_has_flag:
             return 2, "BLUE_HAS_FLAG"
 
-        # If red has blue's flag, emphasize interception/recovery.
+        # High-priority event: red is carrying blue's flag.
         if red_has_flag:
             return 3, "RED_HAS_FLAG"
 
-        # If red pressure is high on blue side, lean defensive.
+        # Secondary event: red pressure near blue side.
         red_pressure = self._count_red_pressure_on_blue_side(state, agents)
         if red_pressure >= 2:
             return 4, "RED_PRESSURE"
 
-        # Otherwise remain in a stable balanced formation.
-        return 0, "BALANCED_DEFAULT"
+        # Quiet-state fallback: rotate among several formations.
+        cycle_index = ((self.decision_count - 1) // self.default_hold) % len(self.default_cycle)
+        config_index = self.default_cycle[cycle_index]
+        reason = self.default_cycle_reason[config_index]
+        return config_index, reason
 
     def assign_roles(self, state: dict, agents: List[str]) -> Tuple[Dict[str, int], int, str]:
         """
@@ -213,43 +235,53 @@ class ScriptedCommander:
         - reason: string explaining the tactical mode
 
         Why this method exists:
-        - A config like (ATTACK, DEFEND, INTERCEPT) is not enough by itself;
-          we still need to decide which specific blue agent gets which role.
+        - The commander chooses a formation first.
+        - Then this method decides which specific blue worker gets which role.
+        - In quiet states, we rotate role ownership among agents so evaluation
+        can confirm the shared worker reacts to role changes.
         """
         config_index, reason = self.choose_config_index(state, agents)
         config = ROLE_CONFIGS[config_index]
 
-        # Start with a simple fixed ordering.
-        assignments = {
-            self.blue_team[0]: config[0],
-            self.blue_team[1]: config[1],
-            self.blue_team[2]: config[2],
-        }
-
-        # If blue is carrying the flag, the carrier should be ATTACK so the
-        # shared worker learns "ATTACK while carrying = finish the return".
+        # Case 1: blue carrier should always be ATTACK.
         blue_carrier = self._find_flag_carrier(state, agents, self.blue_team)
         if blue_carrier is not None:
+            assignments = {aid: DEFEND for aid in self.blue_team}
             assignments[blue_carrier] = ATTACK
+
             others = [aid for aid in self.blue_team if aid != blue_carrier]
             if len(others) == 2:
                 assignments[others[0]] = DEFEND
                 assignments[others[1]] = INTERCEPT
+
             return assignments, config_index, reason
 
-        # If red is carrying blue's flag, make the closest blue worker the interceptor.
+        # Case 2: if red has blue's flag, nearest blue becomes INTERCEPT.
         red_carrier = self._find_flag_carrier(state, agents, self.red_team)
         if red_carrier is not None:
             red_i = self._idx(agents, red_carrier)
             red_pos = state["agent_position"][red_i]
 
             closest = self._closest_blue_to_position(state, agents, red_pos)
+            assignments = {aid: ATTACK for aid in self.blue_team}
+
             if closest is not None:
                 assignments[closest] = INTERCEPT
                 remaining = [aid for aid in self.blue_team if aid != closest]
                 if len(remaining) == 2:
                     assignments[remaining[0]] = DEFEND
                     assignments[remaining[1]] = ATTACK
+
             return assignments, config_index, reason
+
+        # Case 3: quiet state -> rotate which worker gets which slot in the formation.
+        rotation = (self.decision_count - 1) % len(self.blue_team)
+        rotated_blue = self.blue_team[rotation:] + self.blue_team[:rotation]
+
+        assignments = {
+            rotated_blue[0]: config[0],
+            rotated_blue[1]: config[1],
+            rotated_blue[2]: config[2],
+        }
 
         return assignments, config_index, reason
