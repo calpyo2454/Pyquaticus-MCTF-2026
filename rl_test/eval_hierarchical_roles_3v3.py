@@ -123,58 +123,211 @@ def policy_mapping_fn(agent_id, episode, **kwargs):
         return "worker_policy"
     return "random_policy"
 
+def _agent_index_from_id(agent_id: str) -> int:
+    """
+    Convert an agent name like 'agent_3' into integer index 3.
+
+    Why this helper exists:
+    - The underlying Pyquaticus state arrays are indexed by integer agent index.
+    - The evaluation script receives string IDs, so we need a robust conversion.
+    """
+    return int(agent_id.split("_")[1])
+
+
+def _safe_state_value(state: dict, key: str, index: int, default=None):
+    """
+    Safely read a per-agent value from environment state.
+
+    Why this helper exists:
+    - Evaluation should not crash if a state key is missing or shaped
+      unexpectedly in a particular rollout.
+    """
+    if state is None or key not in state:
+        return default
+    try:
+        return state[key][index]
+    except Exception:
+        return default
+
+
+def _get_inner_state(env):
+    """
+    Best-effort access to the wrapped Pyquaticus state.
+
+    Why this helper exists:
+    - The RLlib wrapper does not expose raw state directly.
+    - We need raw state to compute side occupancy, flag possession,
+      and tag-by-role metrics.
+    """
+    try:
+        if hasattr(env, "par_env"):
+            par_env = env.par_env
+
+            if hasattr(par_env, "_get_state"):
+                return par_env._get_state()
+
+            if hasattr(par_env, "base_env") and hasattr(par_env.base_env, "state"):
+                return par_env.base_env.state
+
+            if hasattr(par_env, "state"):
+                return par_env.state
+    except Exception:
+        pass
+
+    return None
+
+
+def _bucket_side_for_agent(agent_id: str, state: dict) -> str:
+    """
+    Classify an agent's current side as home_side, enemy_side, or unknown_side.
+
+    Why this helper exists:
+    - We want to measure whether ATTACK spends more time away from home,
+      DEFEND spends more time at home, and INTERCEPT shifts appropriately.
+
+    Important assumption:
+    - This uses agent_on_sides and assumes side index matches team index
+      (blue=0, red=1). If your branch differs, this metric can still be
+      kept as relative debug information but may need semantic adjustment later.
+    """
+    if state is None or "agent_on_sides" not in state:
+        return "unknown_side"
+
+    idx = _agent_index_from_id(agent_id)
+
+    try:
+        side_value = int(state["agent_on_sides"][idx])
+    except Exception:
+        return "unknown_side"
+
+    num_agents = len(state["agent_on_sides"])
+    half = num_agents // 2
+    team_idx = 0 if idx < half else 1
+
+    if side_value == team_idx:
+        return "home_side"
+    return "enemy_side"
 
 def evaluate_episode(algo, env, render: bool = False):
     """
-    Run one full episode and collect role and commander diagnostics.
+    Run one full evaluation episode and collect role-aware diagnostics.
 
-    Why this method exists:
-    - A simple average reward is not enough for hierarchical debugging.
-    - We also want to know which roles were used and why the commander chose them.
+    Metrics collected:
+    - episode rewards
+    - role occupancy by blue worker
+    - commander reasons and config usage
+    - side occupancy by blue worker and by role
+    - tags made by current role
+    - flag-carry steps by current role
+    - role switches per blue worker
+
+    Why this function exists:
+    - Win/loss alone is too weak for hierarchical debugging.
+    - We need to see whether ATTACK/DEFEND/INTERCEPT produce distinct behavior.
     """
     obs, info = env.reset()
 
-    # Use agents returned by reset.
+    # Use the actually returned active agents from reset.
     active_agents = list(obs.keys())
+    blue_agents = ["agent_0", "agent_1", "agent_2"]
 
     episode_rewards = {agent: 0.0 for agent in active_agents}
-    role_counts = {aid: {ATTACK: 0, DEFEND: 0, INTERCEPT: 0} for aid in ["agent_0", "agent_1", "agent_2"]}
+    role_counts = {aid: {ATTACK: 0, DEFEND: 0, INTERCEPT: 0} for aid in blue_agents}
+
+    # Track territory occupancy per blue worker.
+    side_steps_by_agent = {
+        aid: {"home_side": 0, "enemy_side": 0, "unknown_side": 0}
+        for aid in blue_agents
+    }
+
+    # Track territory occupancy aggregated by current role.
+    side_steps_by_role = {
+        ATTACK: {"home_side": 0, "enemy_side": 0, "unknown_side": 0},
+        DEFEND: {"home_side": 0, "enemy_side": 0, "unknown_side": 0},
+        INTERCEPT: {"home_side": 0, "enemy_side": 0, "unknown_side": 0},
+    }
+
+    # Track dense role-behavior metrics.
+    tags_by_role = {ATTACK: 0, DEFEND: 0, INTERCEPT: 0}
+    flag_carry_steps_by_role = {ATTACK: 0, DEFEND: 0, INTERCEPT: 0}
+
+    # Track how often each blue worker changes assigned role.
+    role_switches = {aid: 0 for aid in blue_agents}
+    last_role_by_agent = {aid: None for aid in blue_agents}
+
+    # Track commander-level usage.
     commander_reasons = {}
+    commander_configs = {}
+
     steps = 0
 
-    # Safety cap so eval cannot hang forever if done signals behave unexpectedly.
-    max_eval_steps = 1000
+    # Safety cap to avoid hanging forever if done handling is imperfect.
+    max_eval_steps = 650
 
     while active_agents and steps < max_eval_steps:
         actions = {}
 
         for aid in active_agents:
-            if aid in ["agent_0", "agent_1", "agent_2"]:
+            if aid in blue_agents:
                 action = algo.compute_single_action(obs[aid], policy_id="worker_policy")
                 actions[aid] = action
             else:
-                # env is the RLlib wrapper; sample from the underlying parallel env.
+                # The red side is a random baseline in evaluation.
+                # Sample from the underlying wrapped parallel env.
                 action = env.par_env.action_space(aid).sample()
                 actions[aid] = action
 
         obs, rewards, terminated, truncated, info = env.step(actions)
 
+        # Best-effort raw state access for richer metrics.
+        state = _get_inner_state(env)
+
         for aid, r in rewards.items():
             episode_rewards[aid] = episode_rewards.get(aid, 0.0) + r
 
-        for aid in ["agent_0", "agent_1", "agent_2"]:
-            if aid in info:
-                role_id = info.get(aid, {}).get("role_id", ATTACK)
-                role_counts[aid][role_id] += 1
+        # Update blue-role diagnostics.
+        for aid in blue_agents:
+            if aid not in info:
+                continue
 
-        # Count commander reason once per step, using agent_0 as representative.
-        reason = info.get("agent_0", {}).get("commander_reason", None)
-        if reason is not None:
-            commander_reasons[reason] = commander_reasons.get(reason, 0) + 1
+            role_id = info.get(aid, {}).get("role_id", ATTACK)
+            role_counts[aid][role_id] += 1
+
+            # Count role switches after initial assignment is established.
+            if last_role_by_agent[aid] is None:
+                last_role_by_agent[aid] = role_id
+            elif last_role_by_agent[aid] != role_id:
+                role_switches[aid] += 1
+                last_role_by_agent[aid] = role_id
+
+            # Territory occupancy by agent and by role.
+            side_bucket = _bucket_side_for_agent(aid, state)
+            side_steps_by_agent[aid][side_bucket] += 1
+            side_steps_by_role[role_id][side_bucket] += 1
+
+            # Tags made while in current role.
+            agent_index = _agent_index_from_id(aid)
+            made_tag = _safe_state_value(state, "agent_made_tag", agent_index, None)
+            if made_tag is not None:
+                tags_by_role[role_id] += 1
+
+            # Steps carrying enemy flag while in current role.
+            has_flag = bool(_safe_state_value(state, "agent_has_flag", agent_index, False))
+            if has_flag:
+                flag_carry_steps_by_role[role_id] += 1
+
+        # Count commander reason/config once per step using agent_0 as representative.
+        step_reason = info.get("agent_0", {}).get("commander_reason", None)
+        if step_reason is not None:
+            commander_reasons[step_reason] = commander_reasons.get(step_reason, 0) + 1
+
+        step_config = info.get("agent_0", {}).get("commander_config_index", None)
+        if step_config is not None:
+            commander_configs[step_config] = commander_configs.get(step_config, 0) + 1
 
         steps += 1
 
-        if steps % 50 == 0:
+        if steps % 200 == 0:
             print(f"  eval progress: step {steps}, active_agents={list(obs.keys())}")
 
         if render:
@@ -183,7 +336,7 @@ def evaluate_episode(algo, env, render: bool = False):
             except Exception:
                 pass
 
-        # If all agents are done, end the episode cleanly.
+        # Stop if all agents are terminated or truncated.
         if terminated and truncated:
             all_done = True
             all_agents_seen = set(terminated.keys()) | set(truncated.keys())
@@ -194,23 +347,18 @@ def evaluate_episode(algo, env, render: bool = False):
             if all_done:
                 break
 
-        # Refresh active agents from the latest observation dict.
         active_agents = list(obs.keys())
 
     if steps >= max_eval_steps:
         print(f"  warning: hit max_eval_steps={max_eval_steps}, forcing episode stop")
 
-    # Best-effort attempt to access final score/capture stats through nested wrappers.
-    try:
-        inner_env = env.par_env
-        if hasattr(inner_env, "base_env"):
-            state = inner_env.base_env.state
-        elif hasattr(inner_env, "state"):
-            state = inner_env.state
-        else:
-            state = None
+    final_blue_captures = None
+    final_red_captures = None
 
-        if state is not None:
+    # Best-effort final capture readout.
+    try:
+        state = _get_inner_state(env)
+        if state is not None and "captures" in state:
             final_blue_captures = int(state["captures"][0])
             final_red_captures = int(state["captures"][1])
     except Exception:
@@ -220,7 +368,13 @@ def evaluate_episode(algo, env, render: bool = False):
         "episode_rewards": episode_rewards,
         "steps": steps,
         "role_counts": role_counts,
+        "side_steps_by_agent": side_steps_by_agent,
+        "side_steps_by_role": side_steps_by_role,
+        "tags_by_role": tags_by_role,
+        "flag_carry_steps_by_role": flag_carry_steps_by_role,
+        "role_switches": role_switches,
         "commander_reasons": commander_reasons,
+        "commander_configs": commander_configs,
         "blue_captures": final_blue_captures,
         "red_captures": final_red_captures,
     }
@@ -305,8 +459,30 @@ def main():
     env = env_creator(env_config)
 
     total_blue_wins = 0
-    aggregate_role_counts = {aid: {ATTACK: 0, DEFEND: 0, INTERCEPT: 0} for aid in ["agent_0", "agent_1", "agent_2"]}
+    blue_agents = ["agent_0", "agent_1", "agent_2"]
+
+    aggregate_role_counts = {
+        aid: {ATTACK: 0, DEFEND: 0, INTERCEPT: 0}
+        for aid in blue_agents
+    }
+
+    aggregate_side_steps_by_agent = {
+        aid: {"home_side": 0, "enemy_side": 0, "unknown_side": 0}
+        for aid in blue_agents
+    }
+
+    aggregate_side_steps_by_role = {
+        ATTACK: {"home_side": 0, "enemy_side": 0, "unknown_side": 0},
+        DEFEND: {"home_side": 0, "enemy_side": 0, "unknown_side": 0},
+        INTERCEPT: {"home_side": 0, "enemy_side": 0, "unknown_side": 0},
+    }
+
+    aggregate_tags_by_role = {ATTACK: 0, DEFEND: 0, INTERCEPT: 0}
+    aggregate_flag_carry_steps_by_role = {ATTACK: 0, DEFEND: 0, INTERCEPT: 0}
+    aggregate_role_switches = {aid: 0 for aid in blue_agents}
+
     aggregate_reasons = {}
+    aggregate_configs = {}
 
     for ep in range(args.episodes):
         stats = evaluate_episode(algo, env, render=args.render)
@@ -316,30 +492,81 @@ def main():
         if blue_caps is not None and red_caps is not None and blue_caps > red_caps:
             total_blue_wins += 1
 
-        for aid in ["agent_0", "agent_1", "agent_2"]:
+        for aid in blue_agents:
             for role_id in [ATTACK, DEFEND, INTERCEPT]:
                 aggregate_role_counts[aid][role_id] += stats["role_counts"][aid][role_id]
 
-        for reason, count in stats["commander_reasons"].items():
-            aggregate_reasons[reason] = aggregate_reasons.get(reason, 0) + count
+            for bucket in ["home_side", "enemy_side", "unknown_side"]:
+                aggregate_side_steps_by_agent[aid][bucket] += stats["side_steps_by_agent"][aid][bucket]
 
-        print(f"[episode {ep + 1}/{args.episodes}] "
-              f"blue_caps={blue_caps} red_caps={red_caps} steps={stats['steps']}")
+        aggregate_role_switches[aid] += stats["role_switches"][aid]
+
+    for role_id in [ATTACK, DEFEND, INTERCEPT]:
+        for bucket in ["home_side", "enemy_side", "unknown_side"]:
+            aggregate_side_steps_by_role[role_id][bucket] += stats["side_steps_by_role"][role_id][bucket]
+
+        aggregate_tags_by_role[role_id] += stats["tags_by_role"][role_id]
+        aggregate_flag_carry_steps_by_role[role_id] += stats["flag_carry_steps_by_role"][role_id]
+
+    for reason, count in stats["commander_reasons"].items():
+        aggregate_reasons[reason] = aggregate_reasons.get(reason, 0) + count
+
+    for config_idx, count in stats["commander_configs"].items():
+        aggregate_configs[config_idx] = aggregate_configs.get(config_idx, 0) + count
+
+    print(
+        f"[episode {ep + 1}/{args.episodes}] "
+        f"blue_caps={blue_caps} red_caps={red_caps} "
+        f"steps={stats['steps']} "
+        f"role_switches={stats['role_switches']}"
+    )
 
     print("\n=== EVALUATION SUMMARY ===")
     print(f"Blue win count: {total_blue_wins} / {args.episodes}")
 
     print("\nRole usage by blue worker:")
-    for aid in ["agent_0", "agent_1", "agent_2"]:
+    for aid in blue_agents:
         total = sum(aggregate_role_counts[aid].values())
         print(f"  {aid}:")
         for role_id in [ATTACK, DEFEND, INTERCEPT]:
             pct = 100.0 * aggregate_role_counts[aid][role_id] / max(total, 1)
             print(f"    {ROLE_NAMES[role_id]} = {aggregate_role_counts[aid][role_id]} ({pct:.1f}%)")
 
+    print("\nTerritory occupancy by blue worker:")
+    for aid in blue_agents:
+        total = sum(aggregate_side_steps_by_agent[aid].values())
+        print(f"  {aid}:")
+        for bucket in ["home_side", "enemy_side", "unknown_side"]:
+            pct = 100.0 * aggregate_side_steps_by_agent[aid][bucket] / max(total, 1)
+            print(f"    {bucket} = {aggregate_side_steps_by_agent[aid][bucket]} ({pct:.1f}%)")
+
+    print("\nTerritory occupancy by current role:")
+    for role_id in [ATTACK, DEFEND, INTERCEPT]:
+        total = sum(aggregate_side_steps_by_role[role_id].values())
+        print(f"  {ROLE_NAMES[role_id]}:")
+        for bucket in ["home_side", "enemy_side", "unknown_side"]:
+            pct = 100.0 * aggregate_side_steps_by_role[role_id][bucket] / max(total, 1)
+            print(f"    {bucket} = {aggregate_side_steps_by_role[role_id][bucket]} ({pct:.1f}%)")
+
+    print("\nTags made by current role:")
+    for role_id in [ATTACK, DEFEND, INTERCEPT]:
+        print(f"  {ROLE_NAMES[role_id]} = {aggregate_tags_by_role[role_id]}")
+
+    print("\nFlag-carry steps by current role:")
+    for role_id in [ATTACK, DEFEND, INTERCEPT]:
+        print(f"  {ROLE_NAMES[role_id]} = {aggregate_flag_carry_steps_by_role[role_id]}")
+
+    print("\nRole switches by blue worker:")
+    for aid in blue_agents:
+        print(f"  {aid} = {aggregate_role_switches[aid]}")
+
     print("\nCommander reasons:")
     for reason, count in sorted(aggregate_reasons.items(), key=lambda kv: kv[1], reverse=True):
         print(f"  {reason} = {count}")
+
+    print("\nCommander config usage:")
+    for config_idx, count in sorted(aggregate_configs.items(), key=lambda kv: kv[1], reverse=True):
+        print(f"  config {config_idx} = {count}")
 
     env.close()
     algo.stop()

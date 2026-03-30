@@ -159,6 +159,41 @@ class ScriptedCommander:
 
         return best_agent
 
+    def _get_team_flag_position(self, state: dict, team_idx: int):
+        """
+        Return a team's flag position, or None if unavailable.
+
+        Why this method exists:
+        - Quiet-state role assignment should use geometry:
+        * attacker closer to enemy flag
+        * defender closer to own flag
+        """
+        if "flag_position" not in state:
+            return None
+        try:
+            pos = state["flag_position"][team_idx]
+            return (float(pos[0]), float(pos[1]))
+        except Exception:
+            return None
+
+
+    def _sorted_blue_by_distance_to(self, state: dict, agents: List[str], target_pos) -> List[str]:
+        """
+        Return blue agents sorted by distance to a target position.
+
+        Why this method exists:
+        - Quiet-state role assignment should pick roles based on geometry instead
+        of fixed agent ordering whenever possible.
+        """
+        scored = []
+        for aid in self.blue_team:
+            i = self._idx(agents, aid)
+            pos = state["agent_position"][i]
+            d = euclidean_distance(pos, target_pos)
+            scored.append((d, aid))
+        scored.sort(key=lambda x: x[0])
+        return [aid for _, aid in scored]
+
     def _count_red_pressure_on_blue_side(self, state: dict, agents: List[str]) -> int:
         """
         Count how many red agents are currently on the blue side.
@@ -274,14 +309,59 @@ class ScriptedCommander:
 
             return assignments, config_index, reason
 
-        # Case 3: quiet state -> rotate which worker gets which slot in the formation.
-        rotation = (self.decision_count - 1) % len(self.blue_team)
-        rotated_blue = self.blue_team[rotation:] + self.blue_team[:rotation]
+        # Case 3: quiet state -> assign roles using geometry first, then fall back to rotation.
+        own_flag_pos = self._get_team_flag_position(state, 0)   # blue flag
+        enemy_flag_pos = self._get_team_flag_position(state, 1) # red flag
 
-        assignments = {
-            rotated_blue[0]: config[0],
-            rotated_blue[1]: config[1],
-            rotated_blue[2]: config[2],
-        }
+        # If flag positions are unavailable, keep the old rotation fallback.
+        if own_flag_pos is None or enemy_flag_pos is None:
+            rotation = (self.decision_count - 1) % len(self.blue_team)
+            rotated_blue = self.blue_team[rotation:] + self.blue_team[:rotation]
+            assignments = {
+                rotated_blue[0]: config[0],
+                rotated_blue[1]: config[1],
+                rotated_blue[2]: config[2],
+            }
+            return assignments, config_index, reason
+
+        # Sort blue agents by tactical relevance.
+        by_enemy_flag = self._sorted_blue_by_distance_to(state, agents, enemy_flag_pos)
+        by_own_flag = self._sorted_blue_by_distance_to(state, agents, own_flag_pos)
+
+        remaining = list(self.blue_team)
+        assignments: Dict[str, int] = {}
+
+        attack_slots = sum(1 for r in config if r == ATTACK)
+        defend_slots = sum(1 for r in config if r == DEFEND)
+        intercept_slots = sum(1 for r in config if r == INTERCEPT)
+
+        # Assign ATTACK roles to those closest to enemy flag.
+        for aid in by_enemy_flag:
+            if attack_slots <= 0:
+                break
+            if aid in remaining:
+                assignments[aid] = ATTACK
+                remaining.remove(aid)
+                attack_slots -= 1
+
+        # Assign DEFEND roles to those closest to own flag from remaining workers.
+        for aid in by_own_flag:
+            if defend_slots <= 0:
+                break
+            if aid in remaining:
+                assignments[aid] = DEFEND
+                remaining.remove(aid)
+                defend_slots -= 1
+
+        # Any remaining workers become INTERCEPT.
+        for aid in list(remaining):
+            if intercept_slots > 0:
+                assignments[aid] = INTERCEPT
+                remaining.remove(aid)
+                intercept_slots -= 1
+
+        # Safety fallback: if any workers remain for any reason, give them ATTACK.
+        for aid in remaining:
+            assignments[aid] = ATTACK
 
         return assignments, config_index, reason

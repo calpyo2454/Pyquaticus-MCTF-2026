@@ -11,7 +11,7 @@ Steps for startup:
         PYTHONPATH=. python rl_test/train_hierarchical_roles_3v3.py \
         --iterations 2 \
         --checkpoint-every 1 \
-        --role-period 5
+        --role-period 5 \
         
         PYTHONPATH=. python rl_test/eval_hierarchical_roles_3v3.py \
         --checkpoint /data/CS-491/Pyquaticus-MCTF-2026/hierarchical_checkpoints \
