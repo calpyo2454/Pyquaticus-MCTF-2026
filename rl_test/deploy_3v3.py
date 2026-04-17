@@ -20,88 +20,145 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import argparse
-import gymnasium as gym
-import numpy as np
-import pygame
-from pygame import KEYDOWN, QUIT, K_ESCAPE
-import ray
-from ray.rllib.algorithms.ppo import PPOConfig, PPOTF1Policy, PPOTorchPolicy
-from ray.tune.logger import pretty_print
-from ray.tune.registry import register_env
-from ray.rllib.env.wrappers.pettingzoo_env import ParallelPettingZooEnv
-import sys
-import time
-from pyquaticus.envs.pyquaticus import Team
-import pyquaticus
-from pyquaticus import pyquaticus_v0
-from ray import air, tune
-from ray.rllib.algorithms.ppo import PPOTF2Policy, PPOConfig
-from ray.rllib.policy.policy import PolicySpec
 import os
-from pyquaticus.base_policies.base_policy_wrappers import DefendGen, AttackGen
-from pyquaticus.base_policies.base_attack import BaseAttacker
-from pyquaticus.base_policies.base_defend import BaseDefender
-from pyquaticus.base_policies.base_combined import Heuristic_CTF_Agent
+import sys
+from pathlib import Path
+
+os.environ.setdefault("RAY_IGNORE_UNHANDLED_ERRORS", "1")
+
+# Add parent directory for imports
+CURRENT_FILE = Path(__file__).resolve()
+PROJECT_ROOT = CURRENT_FILE.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
 from ray.rllib.algorithms.ppo import PPO
-from ray.rllib.policy.policy import Policy
+from ray.tune.registry import register_env
+from pyquaticus import pyquaticus_v0
 from pyquaticus.config import config_dict_std
 from pyquaticus.envs.rllib_pettingzoo_wrapper import ParallelPettingZooWrapper
 import pyquaticus.utils.rewards as rew
 
-RENDER_MODE = 'human'
+
+class RandomPolicy:
+    """Simple random opponent policy for deployment."""
+    
+    def __init__(self, action_space):
+        self.action_space = action_space
+    
+    def compute_action(self, obs):
+        return self.action_space.sample()
+
+
+def build_env_config():
+    """Match the exact env config from training."""
+    config_dict = config_dict_std.copy()
+    config_dict.update({
+        "sim_speedup_factor": 4,
+        "max_score": 3,
+        "max_time": 240,
+        "tagging_cooldown": 60,
+        "tag_on_oob": True,
+    })
+    
+    reward_config = {
+        "agent_0": rew.caps_and_grabs,
+        "agent_1": rew.caps_and_grabs,
+        "agent_2": rew.caps_and_grabs,
+        "agent_3": None,
+        "agent_4": None,
+        "agent_5": None,
+    }
+    
+    return {
+        "config_dict": config_dict,
+        "render_mode": "human",
+        "reward_config": reward_config,
+        "team_size": 3,
+    }
+
+
+def make_env_creator(base_env_kwargs):
+    def env_creator(_config):
+        return pyquaticus_v0.PyQuaticusEnv(**base_env_kwargs)
+    return env_creator
+
+
+def policy_mapping_fn(agent_id, episode, worker, **kwargs):
+    """Match the policy mapping from training."""
+    if agent_id == 'agent_0':
+        return "attacker-policy"
+    if agent_id == 'agent_1':
+        return "support-policy"
+    if agent_id == 'agent_2':
+        return "defender-policy"
+    return "random-policy"
+
+
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Deploy a trained policy in a 2v2 PyQuaticus environment')
-    parser.add_argument('policy_one', help='Please enter the path to the model you would like to load in Ex. ./ray_test/checkpoint_00001/policies/agent-0-policy')
-    parser.add_argument('policy_two', help='Please enter the path to the model you would like to load in Ex. ./ray_test/checkpoint_00001/policies/agent-1-policy') 
-    parser.add_argument('policy_three', help='Please enter the path to the model you would like to load in Ex. ./ray_test/checkpoint_00001/policies/agent-2-policy')
-    reward_config = {}
+    parser = argparse.ArgumentParser(description='Deploy trained 3v3 PPO policies')
+    parser.add_argument('checkpoint', help='Path to PPO algorithm checkpoint (e.g., ./ray_test/run_YYYYMMDD_HHMMSS/optimized_final)')
+    parser.add_argument('--env-name', type=str, default="pyquaticus_optimized_3v3", help='Registered environment name')
     args = parser.parse_args()
-    config_dict = config_dict_std
-    config_dict['sim_speedup_factor'] = 4
-    config_dict['max_score'] = 3
-    config_dict['max_time']=240
-    config_dict['tagging_cooldown'] = 60
-    config_dict['tag_on_oob']=True
-
-
-    #Create Environment
-    env = pyquaticus_v0.PyQuaticusEnv(config_dict=config_dict,render_mode='human',reward_config=reward_config, team_size=3)
     
-    obs,_ = env.reset()
+    # Build environment config (same as training)
+    base_env_kwargs = build_env_config()
+    env_creator = make_env_creator(base_env_kwargs)
     
-    #Ex. Load in Heurisitc
-    #H_one = BaseDefender('agent_0', Team.RED_TEAM, mode='easy')
-    #H_two = BaseAttacker('agent_1', Team.RED_TEAM, mode='easy')
-    #Load in learned policies
-    policy_one = Policy.from_checkpoint(os.path.abspath(args.policy_one))
-    policy_two = Policy.from_checkpoint(os.path.abspath(args.policy_two))
-    policy_three = Policy.from_checkpoint(os.path.abspath(args.policy_three))
+    # Register environment with same wrapper as training
+    register_env(args.env_name, lambda config: ParallelPettingZooWrapper(env_creator(config)))
+    
+    # Create temp env to get spaces
+    temp_env = ParallelPettingZooWrapper(env_creator({}))
+    obs_space = temp_env.observation_space["agent_0"]
+    act_space = temp_env.action_space["agent_0"]
+    temp_env.close()
+    
+    # Restore the full PPO algorithm
+    print(f"Restoring checkpoint from: {args.checkpoint}")
+    algo = PPO.from_checkpoint(os.path.abspath(args.checkpoint))
+    
+    # Create wrapped environment for deployment
+    env = ParallelPettingZooWrapper(env_creator({}))
+    
+    # Create random policy for opponents
+    random_policy = RandomPolicy(act_space)
+    
+    obs, _ = env.reset()
     step = 0
     max_step = 2500
-
+    
+    print("Starting deployment...")
+    
     while True:
-        new_obs = {}
-        #Get Unnormalized Observation for heuristic agents (H_one, and H_two)
-        for k in obs:
-            new_obs[k] = env.agent_obs_normalizer.unnormalized(obs[k])
-
-        #Get learning agent action from policy
-        zero = policy_one.compute_single_action(obs['agent_0'])[0]
-        one = policy_two.compute_single_action(obs['agent_1'])[0]
-        two = policy_three.compute_single_action(obs['agent_2'])[0]
-        #Ex. Compute Heuristic agent actions
-        #two = H_one.compute_action(new_obs)
-        #three = H_two.compute_action(new_obs)
+        actions = {}
         
-        #Step the environment
-        #Opponents Don't Move:
-        obs, reward, term, trunc, info = env.step({'agent_0':zero,'agent_1':one, 'agent_2':two, 'agent_3':-1, 'agent_4':-1, 'agent_5':-1})
-        k =  list(term.keys())
+        # Get actions for each agent using the trained policies
+        for agent_id in obs.keys():
+            if agent_id in ['agent_0', 'agent_1', 'agent_2']:
+                # Use trained policy with correct policy_id
+                policy_id = policy_mapping_fn(agent_id, None, None)
+                actions[agent_id] = algo.compute_single_action(
+                    obs[agent_id],
+                    policy_id=policy_id
+                )
+            else:
+                # Use random policy for opponents
+                actions[agent_id] = random_policy.compute_action(obs[agent_id])
+        
+        # Step environment
+        obs, reward, term, trunc, info = env.step(actions)
+        
+        step += 1
         if step >= max_step:
             break
-        step += 1
-        if term[k[0]] == True or trunc[k[0]]==True:
-            obs,_ = env.reset()
+        
+        # Check if episode is done
+        if any(term.values()) or any(trunc.values()):
+            obs, _ = env.reset()
+            print(f"Episode ended at step {step}")
+    
     env.close()
+    print("Deployment completed.")
 
 
