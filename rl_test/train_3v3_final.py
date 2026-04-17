@@ -11,7 +11,7 @@ os.environ.setdefault("RAY_IGNORE_UNHANDLED_ERRORS", "1")
 # Add parent directory for optional custom rewards import.
 CURRENT_FILE = Path(__file__).resolve()
 PROJECT_ROOT = CURRENT_FILE.parent.parent
-if str(PROJECT_ROOT) not in sys.path:
+if str(PROJECT_ROOT) not in sys.path: 
     sys.path.append(str(PROJECT_ROOT))
 
 import ray
