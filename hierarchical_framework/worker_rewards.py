@@ -4,16 +4,28 @@ hierarchical_framework/worker_rewards.py
 Purpose of this module:
 - Provide role-specific worker reward shaping for the shared PPO worker policy.
 
-Why this file exists:
-- All blue workers share one PPO policy, so the role one-hot appended to
-  observation must be meaningful.
-- Reward shaping helps the shared worker learn distinct ATTACK, DEFEND,
-  and INTERCEPT behavior while still caring about team success.
+This version merges in the teammate's flat PPO reward ideas:
+- stronger sparse team reward from caps_and_grabs
+- milestone-style attacker / support / defender shaping
+- anti-collapse and OOB penalties
+- milestone bonuses for flag progress and territory crossing
+
+Role mapping into this hierarchy:
+- ATTACK     <- teammate attacker_reward
+- INTERCEPT  <- teammate support_reward + small enemy-carrier chase bonus
+- DEFEND     <- teammate defender_reward
+
+Why the merge is structured this way:
+- It preserves the existing wrapper API and training flow.
+- It lets you test the stronger reward ideas without refactoring your
+  commander or environment code.
 """
 
 from __future__ import annotations
 
 from typing import List
+
+import numpy as np
 
 from hierarchical_framework.commander_action import ATTACK, DEFEND, INTERCEPT
 
@@ -41,30 +53,14 @@ def _agent_index(agents: List[str], agent_id: str) -> int:
     """
     return agents.index(agent_id)
 
-def _team_agent_indices(team_idx: int, num_agents: int) -> List[int]:
-    """
-    Return the contiguous block of agent indices belonging to a team.
-
-    Why this method exists:
-    - The current baseline assumes the 3v3 ordering:
-        blue = first half of agents
-        red  = second half of agents
-    - This helper makes it easier to scan teammates or opponents.
-    """
-    half = num_agents // 2
-    if team_idx == 0:
-        return list(range(0, half))
-    return list(range(half, num_agents))
-
 
 def _safe_get_array_value(state: dict, key: str, index: int, default=None):
     """
     Safely read a value from a state array-like entry.
 
     Why this method exists:
-    - Different branches or moments in rollout may omit a key or expose it
-      in a shape we do not expect.
-    - Reward shaping should fail soft instead of crashing training.
+    - Reward shaping should fail soft instead of crashing training if a key
+      is absent or shaped unexpectedly in a rollout.
     """
     if key not in state:
         return default
@@ -79,64 +75,119 @@ def _get_agent_position(state: dict, agent_index: int):
     Return an agent's 2D position from state, or None if unavailable.
 
     Why this method exists:
-    - Spatial shaping depends on distance to flags, carriers, and threats.
+    - Milestone and spatial shaping depend on position access.
     """
     if "agent_position" not in state:
         return None
     try:
         pos = state["agent_position"][agent_index]
-        return (float(pos[0]), float(pos[1]))
+        return np.asarray(pos, dtype=np.float32)
     except Exception:
         return None
 
 
 def _get_team_flag_position(state: dict, team_idx: int):
     """
-    Return the position of a team's own flag, or None if unavailable.
+    Return a team's own flag position, or None if unavailable.
 
     Why this method exists:
-    - ATTACK needs enemy flag position.
-    - DEFEND needs own flag position.
-    - INTERCEPT may need own-flag-relative threat geometry.
+    - ATTACK, INTERCEPT, and DEFEND all reference flag-relative geometry.
     """
     if "flag_position" not in state:
         return None
     try:
         pos = state["flag_position"][team_idx]
-        return (float(pos[0]), float(pos[1]))
+        return np.asarray(pos, dtype=np.float32)
     except Exception:
         return None
 
 
-def _distance(pos_a, pos_b) -> float:
+def _mid_x_from_flags(state: dict, team_idx: int):
     """
-    Compute Euclidean distance between two 2D points.
+    Infer midfield x-coordinate from the two flag x-positions.
 
     Why this method exists:
-    - Spatial shaping uses distance changes as dense reward.
+    - The teammate reward file uses scrimmage/midfield milestones.
+    - Our current reward API does not receive scrimmage_coords directly,
+      so we infer the midpoint from flag positions.
     """
-    if pos_a is None or pos_b is None:
-        return 0.0
-    dx = float(pos_a[0]) - float(pos_b[0])
-    dy = float(pos_a[1]) - float(pos_b[1])
-    return (dx * dx + dy * dy) ** 0.5
+    own_flag = _get_team_flag_position(state, team_idx)
+    enemy_flag = _get_team_flag_position(state, 1 - team_idx)
+    if own_flag is None or enemy_flag is None:
+        return None
+    return float(0.5 * (own_flag[0] + enemy_flag[0]))
 
 
-def _distance_progress(prev_pos, curr_pos, target_pos) -> float:
+def _attacks_right(state: dict, team_idx: int) -> bool:
     """
-    Return positive value when the agent moved closer to target.
+    Determine whether this team attacks toward increasing x.
 
     Why this method exists:
-    - Reward shaping should be dense:
-      * positive if an ATTACK agent moves toward enemy flag
-      * positive if a DEFEND agent returns toward own flag
-      * positive if an INTERCEPT agent closes on a threat
+    - The teammate milestone rewards assume blue attacks right and red attacks left.
+    - This helper makes that directional logic robust to whichever side the
+      flag positions imply.
     """
-    if prev_pos is None or curr_pos is None or target_pos is None:
-        return 0.0
-    prev_d = _distance(prev_pos, target_pos)
-    curr_d = _distance(curr_pos, target_pos)
-    return float(prev_d - curr_d)
+    own_flag = _get_team_flag_position(state, team_idx)
+    enemy_flag = _get_team_flag_position(state, 1 - team_idx)
+    if own_flag is None or enemy_flag is None:
+        return team_idx == 0
+    return float(enemy_flag[0]) > float(own_flag[0])
+
+
+def _crossed_midfield(prev_x: float, x: float, state: dict, team_idx: int) -> bool:
+    """
+    Check whether the agent crossed the inferred midfield line this step.
+
+    Why this method exists:
+    - The teammate's attacker/support rewards use one-time midfield bonuses.
+    """
+    mid_x = _mid_x_from_flags(state, team_idx)
+    if mid_x is None:
+        return False
+
+    if _attacks_right(state, team_idx):
+        return prev_x <= mid_x and x > mid_x
+    return prev_x >= mid_x and x < mid_x
+
+
+def _on_enemy_side(x: float, state: dict, team_idx: int) -> bool:
+    """
+    Check whether the agent is on the enemy side of the field.
+
+    Why this method exists:
+    - Several milestone rewards depend on being in enemy territory.
+    """
+    mid_x = _mid_x_from_flags(state, team_idx)
+    if mid_x is None:
+        return False
+
+    if _attacks_right(state, team_idx):
+        return x > mid_x
+    return x < mid_x
+
+
+def _on_home_side(x: float, state: dict, team_idx: int) -> bool:
+    """
+    Check whether the agent is on its own side of the field.
+
+    Why this method exists:
+    - ATTACK return-home milestone depends on re-crossing midfield.
+    """
+    return not _on_enemy_side(x, state, team_idx)
+
+
+def _team_agent_indices(team_idx: int, num_agents: int) -> List[int]:
+    """
+    Return the contiguous block of agent indices belonging to a team.
+
+    Why this method exists:
+    - In the current 3v3 setup, blue is the first half and red the second half.
+    - This helper makes it easier to scan teammates or opponents.
+    """
+    half = num_agents // 2
+    if team_idx == 0:
+        return list(range(0, half))
+    return list(range(half, num_agents))
 
 
 def _find_team_flag_carrier_index(team_idx: int, agents: List[str], state: dict):
@@ -144,8 +195,7 @@ def _find_team_flag_carrier_index(team_idx: int, agents: List[str], state: dict)
     Find which agent index on a team is carrying the enemy flag.
 
     Why this method exists:
-    - INTERCEPT should close on the opposing carrier.
-    - ATTACK may be rewarded differently if it is the carrier.
+    - INTERCEPT should react to enemy carriers when they exist.
     """
     for idx in _team_agent_indices(team_idx, len(agents)):
         has_flag = _safe_get_array_value(state, "agent_has_flag", idx, False)
@@ -154,247 +204,291 @@ def _find_team_flag_carrier_index(team_idx: int, agents: List[str], state: dict)
     return None
 
 
-def _find_nearest_opponent_to_position(team_idx: int, agents: List[str], state: dict, target_pos):
+def _distance(pos_a, pos_b) -> float:
     """
-    Find the nearest opposing agent to a given position.
+    Compute Euclidean distance between two 2D points.
 
     Why this method exists:
-    - When no enemy carrier exists, INTERCEPT can still react to the most
-      threatening nearby opponent relative to own flag.
+    - Milestone shaping needs flag-zone and carrier-zone proximity checks.
     """
-    opp = 1 - team_idx
-    best_idx = None
-    best_d = float("inf")
-
-    for idx in _team_agent_indices(opp, len(agents)):
-        pos = _get_agent_position(state, idx)
-        d = _distance(pos, target_pos)
-        if d < best_d:
-            best_d = d
-            best_idx = idx
-
-    return best_idx
+    if pos_a is None or pos_b is None:
+        return 0.0
+    return float(np.linalg.norm(pos_a - pos_b))
 
 
-def _agent_on_team_side(team_idx: int, agent_index: int, state: dict):
+def _distance_progress(prev_pos, curr_pos, target_pos) -> float:
     """
-    Return whether the agent is on its own side, if that state key exists.
+    Return positive value when the agent moved closer to target.
 
     Why this method exists:
-    - DEFEND should prefer being home-side.
-    - ATTACK can receive a small penalty for idling on home-side too long.
-
-    Important note:
-    - This assumes agent_on_sides uses team-index semantics where:
-        0 = blue side
-        1 = red side
-    - If your branch differs, this reward term can be disabled later.
+    - INTERCEPT keeps a small chase term even though the teammate file is
+      mostly milestone-based.
     """
-    if "agent_on_sides" not in state:
-        return None
-    side = _safe_get_array_value(state, "agent_on_sides", agent_index, None)
-    if side is None:
-        return None
-    return int(side) == int(team_idx)
+    if prev_pos is None or curr_pos is None or target_pos is None:
+        return 0.0
+    prev_d = _distance(prev_pos, target_pos)
+    curr_d = _distance(curr_pos, target_pos)
+    return float(prev_d - curr_d)
 
 
 def team_reward(agent_id, team, agents, state, prev_state) -> float:
     """
-    Shared team reward component for a worker.
+    Stronger sparse team reward adapted from the teammate's caps_and_grabs.
 
     Why this method exists:
-    - Workers should not be trained in isolation.
-    - This term ties each blue worker partly to team success.
+    - The teammate reward file made team-level grab/capture events much more
+      important than in the earlier hierarchy version.
     """
     t = _team_index(team)
-    opp = 1 - t
-
     r = 0.0
-    if state["grabs"][t] > prev_state["grabs"][t]:
-        r += 0.25
-    if state["captures"][t] > prev_state["captures"][t]:
-        r += 1.00
-    if state["grabs"][opp] > prev_state["grabs"][opp]:
-        r -= 0.25
-    if state["captures"][opp] > prev_state["captures"][opp]:
-        r -= 1.00
-    return r
+
+    if "grabs" in state and "grabs" in prev_state:
+        for idx in range(len(state["grabs"])):
+            if state["grabs"][idx] > prev_state["grabs"][idx]:
+                r += 2.0 if idx == t else -2.0
+
+    if "captures" in state and "captures" in prev_state:
+        for idx in range(len(state["captures"])):
+            if state["captures"][idx] > prev_state["captures"][idx]:
+                r += 12.0 if idx == t else -12.0
+
+    return float(r)
 
 
 def attacker_reward(agent_id, team, agents, state, prev_state) -> float:
     """
-    Role-specific reward shaping for ATTACK.
+    Milestone-heavy ATTACK reward adapted from the teammate's attacker_reward.
 
-    What this version adds:
-    - Dense reward for moving toward the enemy flag when not carrying.
-    - Dense reward for moving toward home flag while carrying.
-    - Small penalty for idling on home side when not carrying.
-    - Existing event shaping for flag gain/loss, OOB, and tagging.
+    Ported milestones:
+    - cross midfield
+    - enter enemy territory
+    - reach flag pickup zone
+    - grab flag
+    - return to home side with flag
+    - capture
+    - anti-collapse and OOB penalties
     """
+    reward = 0.0
     i = _agent_index(agents, agent_id)
     t = _team_index(team)
-    opp = 1 - t
-    r = 0.0
 
-    curr_pos = _get_agent_position(state, i)
-    prev_pos = _get_agent_position(prev_state, i)
-
+    enemy_flag_pos = _get_team_flag_position(state, 1 - t)
     own_flag_pos = _get_team_flag_position(state, t)
-    enemy_flag_pos = _get_team_flag_position(state, opp)
 
-    has_flag_now = bool(_safe_get_array_value(state, "agent_has_flag", i, False))
-    had_flag_prev = bool(_safe_get_array_value(prev_state, "agent_has_flag", i, False))
+    current_pos = _get_agent_position(state, i)
+    prev_pos = _get_agent_position(prev_state, i)
+    if current_pos is None or prev_pos is None:
+        return reward
 
-    # Event shaping: gaining or losing flag possession matters a lot.
-    if has_flag_now and not had_flag_prev:
-        r += 1.0
+    x = float(current_pos[0])
+    prev_x = float(prev_pos[0])
 
-    if had_flag_prev and not has_flag_now:
-        r -= 0.5
+    # MILESTONE 1: Cross midfield.
+    if _crossed_midfield(prev_x, x, state, t):
+        reward += 2.0
 
-    # Dense spatial shaping:
-    # - if not carrying, reward progress toward enemy flag
-    # - if carrying, reward progress toward home flag
-    if has_flag_now:
-        r += 0.08 * _distance_progress(prev_pos, curr_pos, own_flag_pos)
-    else:
-        r += 0.05 * _distance_progress(prev_pos, curr_pos, enemy_flag_pos)
+    # MILESTONE 2: Enter enemy territory.
+    if _on_enemy_side(x, state, t) and not _on_enemy_side(prev_x, state, t):
+        reward += 0.5
 
-    # Mild penalty for sitting on own side while not carrying.
-    on_team_side = _agent_on_team_side(t, i, state)
-    if on_team_side is True and not has_flag_now:
-        r -= 0.01
+    # MILESTONE 3: Reach flag pickup zone.
+    dist_to_enemy_flag = _distance(current_pos, enemy_flag_pos)
+    prev_dist_to_enemy_flag = _distance(prev_pos, enemy_flag_pos)
+    if dist_to_enemy_flag < 0.2 and prev_dist_to_enemy_flag >= 0.2:
+        reward += 1.0
 
-    # Safety/event penalties.
+    # MILESTONE 4: Grab flag.
+    has_flag = bool(_safe_get_array_value(state, "agent_has_flag", i, False))
+    prev_has_flag = bool(_safe_get_array_value(prev_state, "agent_has_flag", i, False))
+    if has_flag and not prev_has_flag:
+        reward += 5.0
+
+    # MILESTONE 5: Return to home side while carrying.
+    if has_flag and _on_home_side(x, state, t) and _on_enemy_side(prev_x, prev_state, t):
+        reward += 3.0
+
+    # MILESTONE 6: Capture.
+    if "captures" in state and "captures" in prev_state:
+        for idx in range(len(state["captures"])):
+            if state["captures"][idx] > prev_state["captures"][idx]:
+                reward += 15.0 if idx == t else -15.0
+
+    # Anti-collapse: discourage spinning / not moving.
+    if _distance(current_pos, prev_pos) < 0.03:
+        reward -= 0.2
+
+    # OOB penalty.
     if float(_safe_get_array_value(state, "agent_oob", i, 0.0)) > float(_safe_get_array_value(prev_state, "agent_oob", i, 0.0)):
-        r -= 0.5
+        reward -= 1.0
 
-    if bool(_safe_get_array_value(state, "agent_is_tagged", i, False)) and not bool(_safe_get_array_value(prev_state, "agent_is_tagged", i, False)):
-        r -= 0.2
-
-    return r
+    return float(reward)
 
 
 def defender_reward(agent_id, team, agents, state, prev_state) -> float:
     """
-    Role-specific reward shaping for DEFEND.
+    Milestone-heavy DEFEND reward adapted from the teammate's defender_reward.
 
-    What this version adds:
-    - Dense reward for staying near own flag / returning toward it.
-    - Bonus for remaining on home side when possible.
-    - Extra incentive to close on enemy carrier if one exists.
-    - Existing tag bonus and penalties when opponent grabs/captures.
+    Ported milestones:
+    - stay near own flag
+    - tag enemy intruder
+    - prevent enemy grabs
+    - team capture contribution
+    - penalty for wandering onto enemy side
+    - anti-collapse and OOB penalties
     """
+    reward = 0.0
     i = _agent_index(agents, agent_id)
     t = _team_index(team)
-    opp = 1 - t
-    r = 0.0
 
-    curr_pos = _get_agent_position(state, i)
-    prev_pos = _get_agent_position(prev_state, i)
     own_flag_pos = _get_team_flag_position(state, t)
+    current_pos = _get_agent_position(state, i)
+    prev_pos = _get_agent_position(prev_state, i)
+    if current_pos is None or prev_pos is None:
+        return reward
 
-    # Anchor defenders near home flag.
-    if own_flag_pos is not None:
-        curr_d = _distance(curr_pos, own_flag_pos)
-        prev_d = _distance(prev_pos, own_flag_pos)
+    x = float(current_pos[0])
 
-        # Reward moving back toward own flag if drifting.
-        r += 0.04 * (prev_d - curr_d)
+    # MILESTONE 1: Stay near own flag.
+    dist_to_own_flag = _distance(current_pos, own_flag_pos)
+    if dist_to_own_flag < 0.4:
+        reward += 0.2
 
-        # Small station-keeping bonus for being reasonably close.
-        if curr_d < 0.35:
-            r += 0.02
+    # MILESTONE 2: Tag enemy intruder.
+    made_tag = _safe_get_array_value(state, "agent_made_tag", i, None)
+    if made_tag is not None:
+        reward += 3.0
+    elif "tags" in state and "tags" in prev_state:
+        # Fallback if per-agent tag bookkeeping differs.
+        if state["tags"][t] > prev_state["tags"][t]:
+            reward += 1.0
 
-    # Bonus for staying on own side if available.
-    on_team_side = _agent_on_team_side(t, i, state)
-    if on_team_side is True:
-        r += 0.01
-    elif on_team_side is False:
-        r -= 0.01
+    # MILESTONE 3: Prevent enemy grab.
+    if "grabs" in state and "grabs" in prev_state:
+        for idx in range(len(state["grabs"])):
+            if state["grabs"][idx] > prev_state["grabs"][idx] and idx != t:
+                reward -= 2.0
 
-    # If enemy has the flag, defender should also collapse toward carrier.
-    enemy_carrier_idx = _find_team_flag_carrier_index(opp, agents, state)
-    if enemy_carrier_idx is not None:
-        enemy_carrier_pos = _get_agent_position(state, enemy_carrier_idx)
-        prev_enemy_carrier_pos = _get_agent_position(prev_state, enemy_carrier_idx)
-        # Use current carrier position for a simple close-in shaping signal.
-        r += 0.05 * _distance_progress(prev_pos, curr_pos, enemy_carrier_pos)
+    # MILESTONE 5: Team capture contribution.
+    if "captures" in state and "captures" in prev_state:
+        for idx in range(len(state["captures"])):
+            if state["captures"][idx] > prev_state["captures"][idx]:
+                reward += 8.0 if idx == t else -8.0
 
-    # Tagging nearby threats is good defender behavior.
-    tagged_idx = _safe_get_array_value(state, "agent_made_tag", i, None)
-    if tagged_idx is not None:
-        r += 0.4
+    # Penalty for wandering too far into enemy territory.
+    if _on_enemy_side(x, state, t):
+        reward -= 0.1
 
-    # Opponent success hurts defenders.
-    if "grabs" in state and "grabs" in prev_state and state["grabs"][opp] > prev_state["grabs"][opp]:
-        r -= 0.5
+    # Anti-collapse and OOB.
+    if _distance(current_pos, prev_pos) < 0.03:
+        reward -= 0.2
 
-    if "captures" in state and "captures" in prev_state and state["captures"][opp] > prev_state["captures"][opp]:
-        r -= 1.0
+    if float(_safe_get_array_value(state, "agent_oob", i, 0.0)) > float(_safe_get_array_value(prev_state, "agent_oob", i, 0.0)):
+        reward -= 1.0
 
-    return r
+    return float(reward)
 
 
 def interceptor_reward(agent_id, team, agents, state, prev_state) -> float:
     """
-    Role-specific reward shaping for INTERCEPT.
+    INTERCEPT reward built from the teammate's support_reward, with a small
+    carrier-chase bonus to preserve this hierarchy's intercept semantics.
 
-    What this version adds:
-    - Dense reward for closing on the enemy carrier if one exists.
-    - If no carrier exists, close on the nearest enemy threat to own flag.
-    - Existing tag bonus and OOB penalty.
+    Ported support-style milestones:
+    - cross midfield
+    - remain in enemy territory
+    - approach enemy flag
+    - backup flag grab
+    - tag bonus
+    - capture bonus
+    - anti-collapse and OOB penalties
+
+    Added hierarchy-specific term:
+    - if enemy carrier exists, reward closing on that carrier
     """
+    reward = 0.0
     i = _agent_index(agents, agent_id)
     t = _team_index(team)
     opp = 1 - t
-    r = 0.0
 
-    curr_pos = _get_agent_position(state, i)
+    enemy_flag_pos = _get_team_flag_position(state, opp)
+    current_pos = _get_agent_position(state, i)
     prev_pos = _get_agent_position(prev_state, i)
-    own_flag_pos = _get_team_flag_position(state, t)
+    if current_pos is None or prev_pos is None:
+        return reward
 
+    x = float(current_pos[0])
+    prev_x = float(prev_pos[0])
+
+    # SUPPORT-LIKE MILESTONE 1: Cross midfield.
+    if _crossed_midfield(prev_x, x, state, t):
+        reward += 1.5
+
+    # SUPPORT-LIKE MILESTONE 2: Stay in enemy territory.
+    if _on_enemy_side(x, state, t):
+        reward += 0.1
+
+    # SUPPORT-LIKE MILESTONE 3: Approach enemy flag.
+    dist_to_flag = _distance(current_pos, enemy_flag_pos)
+    if dist_to_flag < 0.3:
+        reward += 0.5
+
+    # SUPPORT-LIKE MILESTONE 4: Backup flag grab.
+    has_flag = bool(_safe_get_array_value(state, "agent_has_flag", i, False))
+    prev_has_flag = bool(_safe_get_array_value(prev_state, "agent_has_flag", i, False))
+    if has_flag and not prev_has_flag:
+        reward += 4.0
+
+    # SUPPORT-LIKE MILESTONE 5: Tag bonus.
+    made_tag = _safe_get_array_value(state, "agent_made_tag", i, None)
+    if made_tag is not None:
+        reward += 2.0
+    elif "tags" in state and "tags" in prev_state:
+        if state["tags"][t] > prev_state["tags"][t]:
+            reward += 0.5
+
+    # SUPPORT-LIKE capture contribution.
+    if "captures" in state and "captures" in prev_state:
+        for idx in range(len(state["captures"])):
+            if state["captures"][idx] > prev_state["captures"][idx]:
+                reward += 10.0 if idx == t else -10.0
+
+    # Added small intercept-specific carrier chase shaping.
     enemy_carrier_idx = _find_team_flag_carrier_index(opp, agents, state)
-
     if enemy_carrier_idx is not None:
         carrier_pos = _get_agent_position(state, enemy_carrier_idx)
-        r += 0.08 * _distance_progress(prev_pos, curr_pos, carrier_pos)
-    else:
-        # No enemy carrier yet: shadow the nearest likely threat to own flag.
-        if own_flag_pos is not None:
-            threat_idx = _find_nearest_opponent_to_position(t, agents, state, own_flag_pos)
-            if threat_idx is not None:
-                threat_pos = _get_agent_position(state, threat_idx)
-                r += 0.04 * _distance_progress(prev_pos, curr_pos, threat_pos)
+        reward += 0.5 * _distance_progress(prev_pos, current_pos, carrier_pos)
 
-    tagged_idx = _safe_get_array_value(state, "agent_made_tag", i, None)
-    if tagged_idx is not None:
-        r += 0.5
+    # Anti-collapse and OOB.
+    if _distance(current_pos, prev_pos) < 0.03:
+        reward -= 0.2
 
     if float(_safe_get_array_value(state, "agent_oob", i, 0.0)) > float(_safe_get_array_value(prev_state, "agent_oob", i, 0.0)):
-        r -= 0.5
+        reward -= 1.0
 
-    return r
+    return float(reward)
 
 
 def safety_reward(agent_id, team, agents, state, prev_state) -> float:
     """
-    Small shared penalty term for unsafe behavior.
+    Small generic safety/stability penalty.
 
-    Why this method exists:
-    - Regardless of role, workers should avoid obvious mistakes like
-      going OOB or getting tagged carelessly.
+    Why this helper still exists:
+    - The hierarchy wrapper expects a separate safety term in the blended reward.
+    - We keep it modest to avoid double-counting OOB and anti-collapse too hard.
     """
     i = _agent_index(agents, agent_id)
-    r = 0.0
+    reward = 0.0
 
-    if float(state["agent_oob"][i]) > float(prev_state["agent_oob"][i]):
-        r -= 0.5
+    current_pos = _get_agent_position(state, i)
+    prev_pos = _get_agent_position(prev_state, i)
 
-    if bool(state["agent_is_tagged"][i]) and not bool(prev_state["agent_is_tagged"][i]):
-        r -= 0.2
+    if current_pos is not None and prev_pos is not None and _distance(current_pos, prev_pos) < 0.02:
+        reward -= 0.05
 
-    return r
+    if float(_safe_get_array_value(state, "agent_oob", i, 0.0)) > float(_safe_get_array_value(prev_state, "agent_oob", i, 0.0)):
+        reward -= 0.2
+
+    return float(reward)
 
 
 def shaped_worker_reward(
@@ -405,21 +499,17 @@ def shaped_worker_reward(
     agents,
     state,
     prev_state,
-    alpha: float = 0.35,
-    beta: float = 0.20,
-    gamma: float = 0.10,
+    alpha: float = 0.80,
+    beta: float = 0.25,
+    gamma: float = 0.05,
 ) -> float:
     """
-    Blend base environment reward with role-specific shaping and team reward.
+    Blend base environment reward with the merged flat-PPO-inspired role rewards.
 
-    Why this method exists:
-    - For a first scripted-commander baseline, replacing the entire env reward
-      is usually too aggressive.
-    - This function keeps base env reward intact, then adds modest shaping so
-      the shared worker learns role-conditioned behavior.
-
-    Formula used:
-    total = base_reward + alpha * role_reward + beta * team_reward + gamma * safety_reward
+    Why these weights:
+    - The teammate's rewards are stronger and more milestone-oriented.
+    - We want them to matter during training, but we still preserve the base
+      env reward and a team-level term.
     """
     if role_id == ATTACK:
         role_r = attacker_reward(agent_id, team, agents, state, prev_state)
