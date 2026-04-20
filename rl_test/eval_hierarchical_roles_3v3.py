@@ -31,7 +31,12 @@ from pyquaticus.config import config_dict_std
 from pyquaticus.envs.rllib_pettingzoo_wrapper import ParallelPettingZooWrapper
 
 from hierarchical_framework.commander_action import ATTACK, DEFEND, INTERCEPT, ROLE_NAMES
-from hierarchical_framework.hierarchical_team_wrapper import HierarchicalTeamWrapper
+from ray.rllib.models import ModelCatalog
+
+from hierarchical_framework.hierarchical_team_wrapper import (
+    HierarchicalTeamWrapper,
+    SharedEncoderRoleHeadModel,
+)
 
 
 class RandPolicy(Policy):
@@ -419,6 +424,11 @@ def main():
 
     register_env("pyquaticus_hierarchical_roles_3v3", env_creator)
 
+    ModelCatalog.register_custom_model(
+        "shared_encoder_role_heads",
+        SharedEncoderRoleHeadModel,
+    )
+
     raw_env = make_raw_hierarchical_env(env_config)
 
     # Blue workers get role-augmented observations.
@@ -432,8 +442,26 @@ def main():
     raw_env.close()
 
     policies = {
-        "worker_policy": (None, worker_obs_space, worker_act_space, {}),
-        "random_policy": (RandPolicy, red_obs_space, red_act_space, {"no_checkpoint": True}),
+        "worker_policy": (
+            None,
+            worker_obs_space,
+            worker_act_space,
+            {
+                "model": {
+                    "custom_model": "shared_encoder_role_heads",
+                    "custom_model_config": {
+                        "hidden_dim": 256,
+                        "head_dim": 128,
+                    },
+                }
+            },
+        ),
+        "random_policy": (
+            RandPolicy,
+            red_obs_space,
+            red_act_space,
+            {"no_checkpoint": True},
+        ),
     }
 
     if not ray.is_initialized():

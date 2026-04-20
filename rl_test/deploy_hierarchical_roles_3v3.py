@@ -19,8 +19,12 @@ from pyquaticus import pyquaticus_v0
 from pyquaticus.config import config_dict_std
 from pyquaticus.envs.rllib_pettingzoo_wrapper import ParallelPettingZooWrapper
 
-from hierarchical_framework.hierarchical_team_wrapper import HierarchicalTeamWrapper
+from ray.rllib.models import ModelCatalog
 
+from hierarchical_framework.hierarchical_team_wrapper import (
+    HierarchicalTeamWrapper,
+    SharedEncoderRoleHeadModel,
+)
 
 class RandPolicy(Policy):
     """
@@ -130,6 +134,11 @@ if __name__ == "__main__":
     render_env_config = build_env_config(role_period=args.role_period, render_mode="human")
     register_env(args.env_name, lambda config: env_creator(render_env_config))
 
+    ModelCatalog.register_custom_model(
+        "shared_encoder_role_heads",
+        SharedEncoderRoleHeadModel,
+    )
+
     # Build a non-render temp env to infer spaces cleanly without flashing a GUI.
     temp_env_config = build_env_config(role_period=args.role_period, render_mode=None)
     temp_env = env_creator(temp_env_config)
@@ -140,8 +149,26 @@ if __name__ == "__main__":
     temp_env.close()
 
     policies = {
-        "worker_policy": (None, worker_obs_space, worker_act_space, {}),
-        "random_policy": (RandPolicy, red_obs_space, red_act_space, {"no_checkpoint": True}),
+        "worker_policy": (
+            None,
+            worker_obs_space,
+            worker_act_space,
+            {
+                "model": {
+                    "custom_model": "shared_encoder_role_heads",
+                    "custom_model_config": {
+                        "hidden_dim": 256,
+                        "head_dim": 128,
+                    },
+                }
+            },
+        ),
+        "random_policy": (
+            RandPolicy,
+            red_obs_space,
+            red_act_space,
+            {"no_checkpoint": True},
+        ),
     }
 
     if not ray.is_initialized():

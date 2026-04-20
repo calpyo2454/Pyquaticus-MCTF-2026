@@ -23,6 +23,140 @@ from typing import Dict, List, Tuple
 
 import gymnasium as gym
 import numpy as np
+import torch
+import torch.nn as nn
+
+from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
+
+
+class SharedEncoderRoleHeadModel(TorchModelV2, nn.Module):
+    """
+    One shared encoder plus three role-specific policy/value heads.
+
+    Purpose:
+    - Keep sample efficiency by sharing most of the network.
+    - Reduce role interference by giving ATTACK / DEFEND / INTERCEPT
+      their own decision heads.
+    - Use the role one-hot already appended by the wrapper to select
+      which head is active on each forward pass.
+
+    Important assumption:
+    - The last 3 entries of the blue observation are the role one-hot:
+        [attack, defend, intercept]
+    - This model is intended for the blue worker policy only.
+    """
+
+    def __init__(self, obs_space, action_space, num_outputs, model_config, name):
+        TorchModelV2.__init__(self, obs_space, action_space, num_outputs, model_config, name)
+        nn.Module.__init__(self)
+
+        custom_cfg = model_config.get("custom_model_config", {})
+        hidden_dim = int(custom_cfg.get("hidden_dim", 256))
+        head_dim = int(custom_cfg.get("head_dim", 128))
+        self.role_dim = 3
+
+        obs_dim = int(np.product(obs_space.shape))
+        if obs_dim <= self.role_dim:
+            raise ValueError(
+                f"Observation dim {obs_dim} is too small for role_dim={self.role_dim}"
+            )
+
+        self.core_obs_dim = obs_dim - self.role_dim
+
+        # Shared encoder for all roles.
+        self.encoder = nn.Sequential(
+            nn.Linear(self.core_obs_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+        )
+
+        # Role-specific policy heads.
+        self.attack_policy_head = nn.Sequential(
+            nn.Linear(hidden_dim, head_dim),
+            nn.ReLU(),
+            nn.Linear(head_dim, num_outputs),
+        )
+        self.defend_policy_head = nn.Sequential(
+            nn.Linear(hidden_dim, head_dim),
+            nn.ReLU(),
+            nn.Linear(head_dim, num_outputs),
+        )
+        self.intercept_policy_head = nn.Sequential(
+            nn.Linear(hidden_dim, head_dim),
+            nn.ReLU(),
+            nn.Linear(head_dim, num_outputs),
+        )
+
+        # Role-specific value heads.
+        self.attack_value_head = nn.Sequential(
+            nn.Linear(hidden_dim, head_dim),
+            nn.ReLU(),
+            nn.Linear(head_dim, 1),
+        )
+        self.defend_value_head = nn.Sequential(
+            nn.Linear(hidden_dim, head_dim),
+            nn.ReLU(),
+            nn.Linear(head_dim, 1),
+        )
+        self.intercept_value_head = nn.Sequential(
+            nn.Linear(hidden_dim, head_dim),
+            nn.ReLU(),
+            nn.Linear(head_dim, 1),
+        )
+
+        self._value_out = None
+
+    def forward(self, input_dict, state, seq_lens):
+        """
+        Forward pass for PPO.
+
+        Purpose:
+        - Split observation into core features and role one-hot.
+        - Compute one shared embedding.
+        - Compute logits/value from all three heads.
+        - Select the active head using the role one-hot.
+        """
+        obs = input_dict["obs_flat"].float()
+
+        core_obs = obs[:, :self.core_obs_dim]
+        role_one_hot = obs[:, self.core_obs_dim:self.core_obs_dim + self.role_dim]
+
+        embedding = self.encoder(core_obs)
+
+        attack_logits = self.attack_policy_head(embedding)
+        defend_logits = self.defend_policy_head(embedding)
+        intercept_logits = self.intercept_policy_head(embedding)
+
+        attack_value = self.attack_value_head(embedding).squeeze(-1)
+        defend_value = self.defend_value_head(embedding).squeeze(-1)
+        intercept_value = self.intercept_value_head(embedding).squeeze(-1)
+
+        # Stack outputs by role dimension.
+        logits_stack = torch.stack(
+            [attack_logits, defend_logits, intercept_logits],
+            dim=1,
+        )  # [B, 3, A]
+
+        value_stack = torch.stack(
+            [attack_value, defend_value, intercept_value],
+            dim=1,
+        )  # [B, 3]
+
+        # Weighted selection via role one-hot.
+        selected_logits = torch.sum(logits_stack * role_one_hot.unsqueeze(-1), dim=1)
+        selected_value = torch.sum(value_stack * role_one_hot, dim=1)
+
+        self._value_out = selected_value
+        return selected_logits, state
+
+    def value_function(self):
+        """
+        Return the value prediction associated with the selected role head.
+        """
+        if self._value_out is None:
+            raise ValueError("value_function() called before forward()")
+        return self._value_out
 
 from hierarchical_framework.commander_action import (
     ATTACK,

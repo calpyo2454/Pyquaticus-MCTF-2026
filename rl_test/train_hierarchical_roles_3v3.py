@@ -32,7 +32,14 @@ from pyquaticus import pyquaticus_v0
 from pyquaticus.config import config_dict_std
 from pyquaticus.envs.rllib_pettingzoo_wrapper import ParallelPettingZooWrapper
 
-from hierarchical_framework.hierarchical_team_wrapper import HierarchicalTeamWrapper
+#from hierarchical_framework.hierarchical_team_wrapper import HierarchicalTeamWrapper
+
+from ray.rllib.models import ModelCatalog
+
+from hierarchical_framework.hierarchical_team_wrapper import (
+    HierarchicalTeamWrapper,
+    SharedEncoderRoleHeadModel,
+)
 
 
 class RandPolicy(Policy):
@@ -170,6 +177,11 @@ def main():
 
     register_env("pyquaticus_hierarchical_roles_3v3", env_creator)
 
+    ModelCatalog.register_custom_model(
+        "shared_encoder_role_heads",
+        SharedEncoderRoleHeadModel,
+    )
+
     # Build one raw env once so we can read spaces for policy specs.
     raw_env = make_raw_hierarchical_env(env_config)
 
@@ -184,12 +196,32 @@ def main():
     raw_env.close()
 
     policies = {
-        "worker_policy": (None, worker_obs_space, worker_act_space, {}),
-        "random_policy": (RandPolicy, red_obs_space, red_act_space, {"no_checkpoint": True}),
+        "worker_policy": (
+            None,
+            worker_obs_space,
+            worker_act_space,
+            {
+                "model": {
+                    "custom_model": "shared_encoder_role_heads",
+                    "custom_model_config": {
+                        "hidden_dim": 256,
+                        "head_dim": 128,
+                    },
+                }
+            },
+        ),
+        "random_policy": (
+            RandPolicy,
+            red_obs_space,
+            red_act_space,
+            {"no_checkpoint": True},
+        ),
     }
 
     if not ray.is_initialized():
         ray.init(ignore_reinit_error=True)
+
+    
 
     algo_config = (
         PPOConfig()
@@ -217,7 +249,7 @@ def main():
             clip_param=0.2,
             entropy_coeff=0.003,
             vf_loss_coeff=1.0,
-            model={"fcnet_hiddens": [256, 256], "fcnet_activation": "relu"},
+            #model={"fcnet_hiddens": [256, 256], "fcnet_activation": "relu"},
         )
         .multi_agent(
             policies=policies,

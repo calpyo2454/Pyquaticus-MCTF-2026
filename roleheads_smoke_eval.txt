@@ -1,0 +1,89 @@
+Warning! Config variable 'team_size' not recognized (it will have no effect).
+Please consult config.py for variable names.
+
+Warning! Config variable 'team_size' not recognized (it will have no effect).
+Please consult config.py for variable names.
+
+Warning! Config variable 'team_size' not recognized (it will have no effect).
+Please consult config.py for variable names.
+
+  eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+[episode 2/2] blue_caps=0 red_caps=0 steps=600 role_switches={'agent_0': 32, 'agent_1': 14, 'agent_2': 26}
+
+=== EVALUATION SUMMARY ===
+Blue win count: 0 / 2
+
+Role usage by blue worker:
+  agent_0:
+    ATTACK = 635 (52.9%)
+    DEFEND = 395 (32.9%)
+    INTERCEPT = 170 (14.2%)
+  agent_1:
+    ATTACK = 860 (71.7%)
+    DEFEND = 230 (19.2%)
+    INTERCEPT = 110 (9.2%)
+  agent_2:
+    ATTACK = 305 (25.4%)
+    DEFEND = 575 (47.9%)
+    INTERCEPT = 320 (26.7%)
+
+Territory occupancy by blue worker:
+  agent_0:
+    home_side = 389 (32.4%)
+    enemy_side = 811 (67.6%)
+    unknown_side = 0 (0.0%)
+  agent_1:
+    home_side = 649 (54.1%)
+    enemy_side = 551 (45.9%)
+    unknown_side = 0 (0.0%)
+  agent_2:
+    home_side = 229 (19.1%)
+    enemy_side = 971 (80.9%)
+    unknown_side = 0 (0.0%)
+
+Territory occupancy by current role:
+  ATTACK:
+    home_side = 614 (68.2%)
+    enemy_side = 286 (31.8%)
+    unknown_side = 0 (0.0%)
+  DEFEND:
+    home_side = 243 (40.5%)
+    enemy_side = 357 (59.5%)
+    unknown_side = 0 (0.0%)
+  INTERCEPT:
+    home_side = 135 (45.0%)
+    enemy_side = 165 (55.0%)
+    unknown_side = 0 (0.0%)
+
+Tags made by current role:
+  ATTACK = 1
+  DEFEND = 0
+  INTERCEPT = 0
+
+Flag-carry steps by current role:
+  ATTACK = 7
+  DEFEND = 0
+  INTERCEPT = 0
+
+Role switches by blue worker:
+  agent_0 = 0
+  agent_1 = 0
+  agent_2 = 57
+
+Commander reasons:
+  OFFENSE_CYCLE = 150
+  DEFENSE_CYCLE = 150
+  PRESSURE_CYCLE = 150
+  BALANCED_DEFAULT = 145
+  BLUE_HAS_FLAG = 5
+
+Commander config usage:
+  config 2 = 155
+  config 1 = 150
+  config 5 = 150
+  config 0 = 145
