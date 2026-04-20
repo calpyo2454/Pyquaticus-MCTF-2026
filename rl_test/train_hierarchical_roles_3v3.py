@@ -235,9 +235,25 @@ def main():
     for i in range(args.iterations):
         result = algo.train()
 
+        if i == 0:
+            print("top-level result keys:", sorted(result.keys()))
+            print("env_runners keys:", sorted(result.get("env_runners", {}).keys()))
+
         if i % 10 == 0:
-            reward_mean = result.get("episode_reward_mean", 0.0)
-            print(f"[iter {i}] episode_reward_mean={reward_mean:.4f}")
+            env_runner_metrics = result.get("env_runners", {})
+
+            reward_mean = env_runner_metrics.get(
+                "episode_reward_mean",
+                env_runner_metrics.get("episode_return_mean", None)
+            )
+            reward_min = env_runner_metrics.get("episode_reward_min", None)
+            reward_max = env_runner_metrics.get("episode_reward_max", None)
+            ep_len_mean = env_runner_metrics.get("episode_len_mean", None)
+            episodes_this_iter = result.get("episodes_this_iter", None)
+
+            print(f"[iter {i}] reward_mean={reward_mean} reward_min={reward_min} "
+                f"reward_max={reward_max} ep_len_mean={ep_len_mean} "
+                f"episodes_this_iter={episodes_this_iter}")
 
         if i > 0 and i % args.checkpoint_every == 0:
             save_result = algo.save(args.save_dir)
