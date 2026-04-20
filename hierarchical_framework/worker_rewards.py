@@ -286,6 +286,10 @@ def attacker_reward(agent_id, team, agents, state, prev_state) -> float:
     # MILESTONE 1: Cross midfield.
     if _crossed_midfield(prev_x, x, state, t):
         reward += 2.0
+    
+    # Penalty for retreating back home without the flag after entering enemy side.
+    if (not has_flag) and _on_home_side(x, state, t) and _on_enemy_side(prev_x, prev_state, t):
+        reward -= 1.5
 
     # MILESTONE 2: Enter enemy territory.
     if _on_enemy_side(x, state, t) and not _on_enemy_side(prev_x, state, t):
@@ -294,18 +298,24 @@ def attacker_reward(agent_id, team, agents, state, prev_state) -> float:
     # MILESTONE 3: Reach flag pickup zone.
     dist_to_enemy_flag = _distance(current_pos, enemy_flag_pos)
     prev_dist_to_enemy_flag = _distance(prev_pos, enemy_flag_pos)
+    if dist_to_enemy_flag < 0.60 and prev_dist_to_enemy_flag >= 0.60:
+        reward += 0.4
+    if dist_to_enemy_flag < 0.40 and prev_dist_to_enemy_flag >= 0.40:
+        reward += 0.8
+    if dist_to_enemy_flag < 0.25 and prev_dist_to_enemy_flag >= 0.25:
+        reward += 1.5
     if dist_to_enemy_flag < 0.2 and prev_dist_to_enemy_flag >= 0.2:
-        reward += 1.0
+        reward += 2.0
 
     # MILESTONE 4: Grab flag.
     has_flag = bool(_safe_get_array_value(state, "agent_has_flag", i, False))
     prev_has_flag = bool(_safe_get_array_value(prev_state, "agent_has_flag", i, False))
     if has_flag and not prev_has_flag:
-        reward += 5.0
+        reward += 8.0
 
     # MILESTONE 5: Return to home side while carrying.
     if has_flag and _on_home_side(x, state, t) and _on_enemy_side(prev_x, prev_state, t):
-        reward += 3.0
+        reward += 5.0
 
     # MILESTONE 6: Capture.
     if "captures" in state and "captures" in prev_state:
@@ -314,12 +324,12 @@ def attacker_reward(agent_id, team, agents, state, prev_state) -> float:
                 reward += 15.0 if idx == t else -15.0
 
     # Anti-collapse: discourage spinning / not moving.
-    if _distance(current_pos, prev_pos) < 0.03:
-        reward -= 0.2
+    if _distance(current_pos, prev_pos) < 0.015:
+        reward -= 0.03
 
     # OOB penalty.
     if float(_safe_get_array_value(state, "agent_oob", i, 0.0)) > float(_safe_get_array_value(prev_state, "agent_oob", i, 0.0)):
-        reward -= 1.0
+        reward -= 2.0
 
     return float(reward)
 
@@ -350,23 +360,29 @@ def defender_reward(agent_id, team, agents, state, prev_state) -> float:
 
     # MILESTONE 1: Stay near own flag.
     dist_to_own_flag = _distance(current_pos, own_flag_pos)
-    if dist_to_own_flag < 0.4:
-        reward += 0.2
+    if dist_to_own_flag < 0.20:
+        reward += 0.25
+    elif dist_to_own_flag < 0.35:
+        reward += 0.12
+    elif dist_to_own_flag > 0.60:
+        reward -= 0.15
+    elif dist_to_own_flag > 0.80:
+        reward -= 0.30
 
     # MILESTONE 2: Tag enemy intruder.
     made_tag = _safe_get_array_value(state, "agent_made_tag", i, None)
     if made_tag is not None:
-        reward += 3.0
+        reward += 2.0
     elif "tags" in state and "tags" in prev_state:
         # Fallback if per-agent tag bookkeeping differs.
         if state["tags"][t] > prev_state["tags"][t]:
-            reward += 1.0
+            reward += 2.0
 
     # MILESTONE 3: Prevent enemy grab.
     if "grabs" in state and "grabs" in prev_state:
         for idx in range(len(state["grabs"])):
             if state["grabs"][idx] > prev_state["grabs"][idx] and idx != t:
-                reward -= 2.0
+                reward -= 4.0
 
     # MILESTONE 5: Team capture contribution.
     if "captures" in state and "captures" in prev_state:
@@ -376,14 +392,14 @@ def defender_reward(agent_id, team, agents, state, prev_state) -> float:
 
     # Penalty for wandering too far into enemy territory.
     if _on_enemy_side(x, state, t):
-        reward -= 0.1
+        reward -= 0.3
 
     # Anti-collapse and OOB.
-    if _distance(current_pos, prev_pos) < 0.03:
-        reward -= 0.2
+    if _distance(current_pos, prev_pos) < 0.015:
+        reward -= 0.03
 
     if float(_safe_get_array_value(state, "agent_oob", i, 0.0)) > float(_safe_get_array_value(prev_state, "agent_oob", i, 0.0)):
-        reward -= 1.0
+        reward -= 2.0
 
     return float(reward)
 
@@ -441,10 +457,10 @@ def interceptor_reward(agent_id, team, agents, state, prev_state) -> float:
     # SUPPORT-LIKE MILESTONE 5: Tag bonus.
     made_tag = _safe_get_array_value(state, "agent_made_tag", i, None)
     if made_tag is not None:
-        reward += 2.0
+        reward += 8.0
     elif "tags" in state and "tags" in prev_state:
         if state["tags"][t] > prev_state["tags"][t]:
-            reward += 0.5
+            reward += 1.5
 
     # SUPPORT-LIKE capture contribution.
     if "captures" in state and "captures" in prev_state:
@@ -456,14 +472,18 @@ def interceptor_reward(agent_id, team, agents, state, prev_state) -> float:
     enemy_carrier_idx = _find_team_flag_carrier_index(opp, agents, state)
     if enemy_carrier_idx is not None:
         carrier_pos = _get_agent_position(state, enemy_carrier_idx)
-        reward += 0.5 * _distance_progress(prev_pos, current_pos, carrier_pos)
+        progress_to_carrier = _distance_progress(prev_pos, current_pos, carrier_pos)
+        reward += 2.0 * progress_to_carrier
+
+        if progress_to_carrier < 0:
+            reward += 1.0 * progress_to_carrier   # extra penalty for moving away
 
     # Anti-collapse and OOB.
-    if _distance(current_pos, prev_pos) < 0.03:
-        reward -= 0.2
+    if _distance(current_pos, prev_pos) < 0.015:
+        reward -= 0.03
 
     if float(_safe_get_array_value(state, "agent_oob", i, 0.0)) > float(_safe_get_array_value(prev_state, "agent_oob", i, 0.0)):
-        reward -= 1.0
+        reward -= 2.0
 
     return float(reward)
 
@@ -482,14 +502,53 @@ def safety_reward(agent_id, team, agents, state, prev_state) -> float:
     current_pos = _get_agent_position(state, i)
     prev_pos = _get_agent_position(prev_state, i)
 
-    if current_pos is not None and prev_pos is not None and _distance(current_pos, prev_pos) < 0.02:
-        reward -= 0.05
+    if current_pos is not None and prev_pos is not None and _distance(current_pos, prev_pos) < 0.01:
+        reward -= 0.01
 
     if float(_safe_get_array_value(state, "agent_oob", i, 0.0)) > float(_safe_get_array_value(prev_state, "agent_oob", i, 0.0)):
-        reward -= 0.2
+        reward -= 0.5
+
+    if bool(_safe_get_array_value(state, "agent_oob", i, False)):
+        reward -= 0.1
 
     return float(reward)
 
+
+def spacing_reward(agent_id, team, agents, state) -> float:
+    i = _agent_index(agents, agent_id)
+    t = _team_index(team)
+
+    num_agents = len(agents)
+    half = num_agents // 2
+    if t == 0:
+        teammate_indices = [j for j in range(0, half) if j != i]
+    else:
+        teammate_indices = [j for j in range(half, num_agents) if j != i]
+
+    current_pos = _get_agent_position(state, i)
+    if current_pos is None:
+        return 0.0
+
+    dists = []
+    for j in teammate_indices:
+        teammate_pos = _get_agent_position(state, j)
+        if teammate_pos is not None:
+            dists.append(_distance(current_pos, teammate_pos))
+
+    if not dists:
+        return 0.0
+
+    nearest = min(dists)
+    reward = 0.0
+
+    if nearest < 0.12:
+        reward -= 0.12
+    elif 0.18 <= nearest <= 0.45:
+        reward += 0.03
+    elif nearest > 0.90:
+        reward -= 0.04
+
+    return reward
 
 def shaped_worker_reward(
     role_id: int,
@@ -499,9 +558,9 @@ def shaped_worker_reward(
     agents,
     state,
     prev_state,
-    alpha: float = 0.80,
-    beta: float = 0.25,
-    gamma: float = 0.05,
+    alpha: float = 1.00,
+    beta: float = 0.20,
+    gamma: float = 0.08,
 ) -> float:
     """
     Blend base environment reward with the merged flat-PPO-inspired role rewards.
@@ -511,6 +570,9 @@ def shaped_worker_reward(
     - We want them to matter during training, but we still preserve the base
       env reward and a team-level term.
     """
+
+    delta = spacing_reward(agent_id, team, agents, state)
+
     if role_id == ATTACK:
         role_r = attacker_reward(agent_id, team, agents, state, prev_state)
     elif role_id == DEFEND:
@@ -523,5 +585,7 @@ def shaped_worker_reward(
         + alpha * role_r
         + beta * team_reward(agent_id, team, agents, state, prev_state)
         + gamma * safety_reward(agent_id, team, agents, state, prev_state)
+        + 0.25 * delta
     )
     return float(total)
+
