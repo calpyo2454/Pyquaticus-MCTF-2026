@@ -22,7 +22,7 @@ def combined_reward(
     reward = 0.0
     agent_idx = agents.index(agent_id)
 
-    # Base sparse reward
+    # Base sparse reward (captures/grabs)
     reward += caps_and_grabs(
         agent_id,
         team,
@@ -52,62 +52,46 @@ def combined_reward(
     has_flag      = state["agent_has_flag"][agent_idx]
     prev_has_flag = prev_state["agent_has_flag"][agent_idx]
 
-    # Small progress reward only. No free movement reward.
+    # Progress toward objective (flag or home)
     target = own_flag_pos if has_flag else enemy_flag_pos
     current_dist = np.linalg.norm(current_pos - target)
     prev_dist    = np.linalg.norm(prev_pos - target)
     progress = prev_dist - current_dist
 
-    # Reward real progress, lightly punish moving away.
-    reward += 0.02 * progress
+    # Strong progress reward to guide learning
+    reward += 0.5 * progress
 
-    # Tiny border penalty only.
+    # OOB penalty
     if state["agent_oob"][agent_idx]:
+        reward -= 0.3
+
+    # Anti-stall penalty
+    step_move = np.linalg.norm(current_pos - prev_pos)
+    if step_move < 0.01:
         reward -= 0.05
 
-    # Tiny anti-stall penalty only if agent barely moved.
-    step_move = np.linalg.norm(current_pos - prev_pos)
-    if step_move < 0.03:
-        reward -= 0.005
-
-    # Bonus for actually taking the flag
+    # Bonus for taking flag
     if (not prev_has_flag) and has_flag:
-        reward += 3.0
+        reward += 5.0
 
-    # Bonus for successfully returning toward home while carrying
+    # Bonus for returning home with flag
     if has_flag and progress > 0:
-        reward += 0.03 * progress
+        reward += 0.3 * progress
 
-    # Reward crossing midfield / entering enemy territory
+    # Midfield crossing milestone
     x = current_pos[0]
     prev_x = prev_pos[0]
     
     mid_x = scrimmage_coords[0] if np.ndim(scrimmage_coords) > 0 else scrimmage_coords
+    if isinstance(mid_x, np.ndarray):
+        mid_x = mid_x.item() if mid_x.ndim == 0 else mid_x[0]
     
-    if int(team) == 0:  # blue attacks to the right
+    if int(team) == 0:
         if prev_x <= mid_x and x > mid_x:
-            reward += 1.5   # one-time midfield crossing bonus
-        if x > mid_x:
-            reward += 0.01  # small per-step bonus for being in enemy territory
-    else:  # red attacks to the left
+            reward += 3.0
+    else:
         if prev_x >= mid_x and x < mid_x:
-            reward += 1.5
-        if x < mid_x:
-            reward += 0.01
-
-    # Bonus for getting close to enemy flag (encourages flag-seeking)
-    dist_to_enemy_flag = np.linalg.norm(current_pos - enemy_flag_pos)
-    if dist_to_enemy_flag < 0.3 and not has_flag:
-        reward += 0.05
-
-    # Small penalty for loitering near own flag when not carrying (encourages movement)
-    dist_to_own_flag = np.linalg.norm(current_pos - own_flag_pos)
-    if dist_to_own_flag < 0.2 and not has_flag:
-        reward -= 0.02
-
-    # Strong anti-spin penalty to prevent collapse
-    if np.linalg.norm(current_pos - prev_pos) < 0.05:
-        reward -= 0.1
+            reward += 3.0
 
     return reward
 
@@ -225,7 +209,188 @@ def caps_and_grabs(
     return reward
 
 
-### Role-Based Milestone Rewards (No Dense Shaping) ###
+### Dense Shaping Rewards with Curriculum Learning ###
+
+def dense_flag_reward(
+    agent_id: str,
+    team: Team,
+    agents: list,
+    agent_inds_of_team: dict,
+    state: dict,
+    prev_state: dict,
+    env_size: np.ndarray,
+    agent_radius: np.ndarray,
+    catch_radius: float,
+    scrimmage_coords: np.ndarray,
+    max_speeds: list,
+    tagging_cooldown: float,
+):
+    """Dense shaping reward - strong continuous feedback for moving toward objectives"""
+    reward = 0.0
+    idx = agents.index(agent_id)
+    
+    # Flag positions
+    if int(team) == 0:  # blue attacks right
+        enemy_flag_pos = state["flag_position"][1]
+        own_flag_pos = state["flag_position"][0]
+    else:  # red attacks left
+        enemy_flag_pos = state["flag_position"][0]
+        own_flag_pos = state["flag_position"][1]
+    
+    current_pos = state["agent_position"][idx]
+    prev_pos = prev_state["agent_position"][idx]
+    
+    has_flag = state["agent_has_flag"][idx]
+    prev_has_flag = prev_state["agent_has_flag"][idx]
+    
+    # DENSE REWARD 1: Move toward target (enemy flag or home)
+    if has_flag:
+        target = own_flag_pos
+        progress_weight = 2.0  # Stronger incentive when carrying flag
+    else:
+        target = enemy_flag_pos
+        progress_weight = 1.5  # Strong incentive to approach flag
+    
+    current_dist = np.linalg.norm(current_pos - target)
+    prev_dist = np.linalg.norm(prev_pos - target)
+    progress = prev_dist - current_dist
+    reward += progress_weight * progress
+    
+    # DENSE REWARD 2: Bonus for being close to target
+    if not has_flag:
+        dist_to_flag = np.linalg.norm(current_pos - enemy_flag_pos)
+        if dist_to_flag < 0.3:
+            reward += 0.5
+        elif dist_to_flag < 0.5:
+            reward += 0.2
+    else:
+        dist_to_home = np.linalg.norm(current_pos - own_flag_pos)
+        if dist_to_home < 0.3:
+            reward += 1.0
+        elif dist_to_home < 0.5:
+            reward += 0.5
+    
+    # SPARSE REWARDS: Key events
+    # Grab flag
+    if has_flag and not prev_has_flag:
+        reward += 10.0
+    
+    # Capture
+    for t in range(len(state["captures"])):
+        if state["captures"][t] > prev_state["captures"][t]:
+            reward += 20.0 if t == int(team) else -20.0
+    
+    # Grab (team grabbed enemy flag)
+    for t in range(len(state["grabs"])):
+        if state["grabs"][t] > prev_state["grabs"][t]:
+            reward += 5.0 if t == int(team) else -5.0
+    
+    # PENALTIES
+    # OOB
+    if state["agent_oob"][idx] > prev_state["agent_oob"][idx]:
+        reward -= 2.0
+    
+    # Anti-stall (prevent spinning in place)
+    movement = np.linalg.norm(current_pos - prev_pos)
+    if movement < 0.02:
+        reward -= 0.3
+    
+    return reward
+
+
+def curriculum_reward(
+    agent_id: str,
+    team: Team,
+    agents: list,
+    agent_inds_of_team: dict,
+    state: dict,
+    prev_state: dict,
+    env_size: np.ndarray,
+    agent_radius: np.ndarray,
+    catch_radius: float,
+    scrimmage_coords: np.ndarray,
+    max_speeds: list,
+    tagging_cooldown: float,
+    curriculum_stage: int = 3,
+):
+    """
+    Curriculum learning reward with progressive difficulty:
+    Stage 1: Just move forward (simple movement)
+    Stage 2: Move toward enemy flag
+    Stage 3: Full flag capture task (default)
+    """
+    reward = 0.0
+    idx = agents.index(agent_id)
+    
+    # Flag positions
+    if int(team) == 0:
+        enemy_flag_pos = state["flag_position"][1]
+        own_flag_pos = state["flag_position"][0]
+        attack_direction = 1  # blue attacks right
+    else:
+        enemy_flag_pos = state["flag_position"][0]
+        own_flag_pos = state["flag_position"][1]
+        attack_direction = -1  # red attacks left
+    
+    current_pos = state["agent_position"][idx]
+    prev_pos = prev_state["agent_position"][idx]
+    x, prev_x = current_pos[0], prev_pos[0]
+    
+    has_flag = state["agent_has_flag"][idx]
+    prev_has_flag = prev_state["agent_has_flag"][idx]
+    
+    # STAGE 1: Basic forward movement
+    if curriculum_stage >= 1:
+        forward_progress = (x - prev_x) * attack_direction
+        reward += 2.0 * forward_progress
+    
+    # STAGE 2: Move toward enemy flag
+    if curriculum_stage >= 2:
+        if not has_flag:
+            dist_to_flag = np.linalg.norm(current_pos - enemy_flag_pos)
+            prev_dist = np.linalg.norm(prev_pos - enemy_flag_pos)
+            progress = prev_dist - dist_to_flag
+            reward += 1.5 * progress
+        else:
+            dist_to_home = np.linalg.norm(current_pos - own_flag_pos)
+            prev_dist = np.linalg.norm(prev_pos - own_flag_pos)
+            progress = prev_dist - dist_to_home
+            reward += 2.0 * progress
+    
+    # STAGE 3: Full task with bonuses
+    if curriculum_stage >= 3:
+        # Proximity bonuses
+        if not has_flag:
+            dist_to_flag = np.linalg.norm(current_pos - enemy_flag_pos)
+            if dist_to_flag < 0.3:
+                reward += 0.5
+        else:
+            dist_to_home = np.linalg.norm(current_pos - own_flag_pos)
+            if dist_to_home < 0.3:
+                reward += 1.0
+    
+    # Sparse rewards (all stages)
+    if has_flag and not prev_has_flag:
+        reward += 10.0
+    
+    for t in range(len(state["captures"])):
+        if state["captures"][t] > prev_state["captures"][t]:
+            reward += 20.0 if t == int(team) else -20.0
+    
+    for t in range(len(state["grabs"])):
+        if state["grabs"][t] > prev_state["grabs"][t]:
+            reward += 5.0 if t == int(team) else -5.0
+    
+    # Penalties
+    if state["agent_oob"][idx] > prev_state["agent_oob"][idx]:
+        reward -= 2.0
+    
+    movement = np.linalg.norm(current_pos - prev_pos)
+    if movement < 0.02:
+        reward -= 0.3
+    
+    return reward
+
 
 def attacker_reward(
     agent_id: str,
@@ -241,72 +406,11 @@ def attacker_reward(
     max_speeds: list,
     tagging_cooldown: float,
 ):
-    """Milestone rewards for primary flag attacker - NO dense shaping"""
-    reward = 0.0
-    idx = agents.index(agent_id)
-    
-    # Flag positions
-    if int(team) == 0:  # blue attacks right
-        enemy_flag_pos = state["flag_position"][1]
-        own_flag_pos = state["flag_position"][0]
-    else:  # red attacks left
-        enemy_flag_pos = state["flag_position"][0]
-        own_flag_pos = state["flag_position"][1]
-    
-    current_pos = state["agent_position"][idx]
-    prev_pos = prev_state["agent_position"][idx]
-    x, prev_x = current_pos[0], prev_pos[0]
-    mid_x = scrimmage_coords[0] if np.ndim(scrimmage_coords) > 0 else scrimmage_coords
-    if isinstance(mid_x, np.ndarray):
-        mid_x = mid_x[0]
-    
-    # MILESTONE 1: Cross midfield (+2.0) - one-time bonus
-    if int(team) == 0:
-        if prev_x <= mid_x and x > mid_x:
-            reward += 2.0
-    else:
-        if prev_x >= mid_x and x < mid_x:
-            reward += 2.0
-    
-    # MILESTONE 2: Enter enemy territory (+0.5)
-    in_enemy_territory = (int(team) == 0 and x > mid_x) or (int(team) == 1 and x < mid_x)
-    was_in_enemy = (int(team) == 0 and prev_x > mid_x) or (int(team) == 1 and prev_x < mid_x)
-    if in_enemy_territory and not was_in_enemy:
-        reward += 0.5
-    
-    # MILESTONE 3: Reach flag pickup zone (+1.0)
-    dist_to_enemy_flag = np.linalg.norm(current_pos - enemy_flag_pos)
-    prev_dist = np.linalg.norm(prev_pos - enemy_flag_pos)
-    if dist_to_enemy_flag < 0.2 and prev_dist >= 0.2:
-        reward += 1.0
-    
-    # MILESTONE 4: Grab flag (+5.0)
-    has_flag = state["agent_has_flag"][idx]
-    prev_has_flag = prev_state["agent_has_flag"][idx]
-    if has_flag and not prev_has_flag:
-        reward += 5.0
-    
-    # MILESTONE 5: Return to home side with flag (+3.0)
-    if has_flag:
-        on_home_side = (int(team) == 0 and x < mid_x) or (int(team) == 1 and x > mid_x)
-        was_on_enemy = (int(team) == 0 and prev_x > mid_x) or (int(team) == 1 and prev_x < mid_x)
-        if on_home_side and was_on_enemy:
-            reward += 3.0
-    
-    # MILESTONE 6: Capture (+15.0)
-    for t in range(len(state["captures"])):
-        if state["captures"][t] > prev_state["captures"][t]:
-            reward += 15.0 if t == int(team) else -15.0
-    
-    # Anti-collapse: spinning penalty
-    if np.linalg.norm(current_pos - prev_pos) < 0.03:
-        reward -= 0.2
-    
-    # OOB penalty
-    if state["agent_oob"][idx] > prev_state["agent_oob"][idx]:
-        reward -= 1.0
-    
-    return reward
+    """Attacker uses dense shaping rewards for aggressive flag chasing"""
+    return dense_flag_reward(
+        agent_id, team, agents, agent_inds_of_team, state, prev_state,
+        env_size, agent_radius, catch_radius, scrimmage_coords, max_speeds, tagging_cooldown
+    )
 
 
 def support_reward(
@@ -323,7 +427,7 @@ def support_reward(
     max_speeds: list,
     tagging_cooldown: float,
 ):
-    """Milestone rewards for support role - enters enemy territory, screens"""
+    """Support uses dense shaping - secondary flag chaser with team coordination"""
     reward = 0.0
     idx = agents.index(agent_id)
     
@@ -337,52 +441,46 @@ def support_reward(
     
     current_pos = state["agent_position"][idx]
     prev_pos = prev_state["agent_position"][idx]
-    x, prev_x = current_pos[0], prev_pos[0]
-    mid_x = scrimmage_coords[0] if np.ndim(scrimmage_coords) > 0 else scrimmage_coords
-    if isinstance(mid_x, np.ndarray):
-        mid_x = mid_x[0]
     
-    # MILESTONE 1: Cross midfield (+1.5)
-    if int(team) == 0:
-        if prev_x <= mid_x and x > mid_x:
-            reward += 1.5
-    else:
-        if prev_x >= mid_x and x < mid_x:
-            reward += 1.5
-    
-    # MILESTONE 2: Stay in enemy territory (+0.1 per step, capped)
-    in_enemy = (int(team) == 0 and x > mid_x) or (int(team) == 1 and x < mid_x)
-    if in_enemy:
-        reward += 0.1
-    
-    # MILESTONE 3: Approach enemy flag (+0.5 for getting close)
-    dist_to_flag = np.linalg.norm(current_pos - enemy_flag_pos)
-    if dist_to_flag < 0.3:
-        reward += 0.5
-    
-    # MILESTONE 4: Grab flag (backup attacker) (+4.0)
     has_flag = state["agent_has_flag"][idx]
     prev_has_flag = prev_state["agent_has_flag"][idx]
+    
+    # Move toward target (slightly weaker than attacker)
+    if has_flag:
+        target = own_flag_pos
+        progress_weight = 1.5
+    else:
+        target = enemy_flag_pos
+        progress_weight = 1.2
+    
+    current_dist = np.linalg.norm(current_pos - target)
+    prev_dist = np.linalg.norm(prev_pos - target)
+    progress = prev_dist - current_dist
+    reward += progress_weight * progress
+    
+    # Proximity bonus
+    if not has_flag and current_dist < 0.4:
+        reward += 0.3
+    
+    # Sparse rewards
     if has_flag and not prev_has_flag:
-        reward += 4.0
+        reward += 8.0
     
-    # MILESTONE 5: Tag enemy (+2.0) - support defends attacker
-    for t in range(len(state["tags"])):
-        if state["tags"][t] > prev_state["tags"][t]:
-            if t == int(team):
-                reward += 2.0
-    
-    # Capture bonus
     for t in range(len(state["captures"])):
         if state["captures"][t] > prev_state["captures"][t]:
-            reward += 10.0 if t == int(team) else -10.0
+            reward += 15.0 if t == int(team) else -15.0
     
-    # Anti-collapse
-    if np.linalg.norm(current_pos - prev_pos) < 0.03:
-        reward -= 0.2
+    for t in range(len(state["grabs"])):
+        if state["grabs"][t] > prev_state["grabs"][t]:
+            reward += 4.0 if t == int(team) else -4.0
     
+    # Penalties
     if state["agent_oob"][idx] > prev_state["agent_oob"][idx]:
-        reward -= 1.0
+        reward -= 2.0
+    
+    movement = np.linalg.norm(current_pos - prev_pos)
+    if movement < 0.02:
+        reward -= 0.3
     
     return reward
 
@@ -401,7 +499,7 @@ def defender_reward(
     max_speeds: list,
     tagging_cooldown: float,
 ):
-    """Milestone rewards for defender - protects own flag"""
+    """Defender uses dense shaping - stay near own flag, intercept enemies"""
     reward = 0.0
     idx = agents.index(agent_id)
     
@@ -415,46 +513,51 @@ def defender_reward(
     
     current_pos = state["agent_position"][idx]
     prev_pos = prev_state["agent_position"][idx]
-    x = current_pos[0]
-    mid_x = scrimmage_coords[0] if np.ndim(scrimmage_coords) > 0 else scrimmage_coords
-    if isinstance(mid_x, np.ndarray):
-        mid_x = mid_x[0]
     
-    # MILESTONE 1: Stay near own flag (+0.2 per step when close)
-    dist_to_own = np.linalg.norm(current_pos - own_flag_pos)
-    if dist_to_own < 0.4:
-        reward += 0.2
+    # Find nearest enemy
+    enemy_indices = [i for i in range(len(agents)) if i not in agent_inds_of_team[team]]
+    nearest_enemy_dist = float('inf')
+    nearest_enemy_pos = None
     
-    # MILESTONE 2: Tag enemy intruder (+3.0)
-    for t in range(len(state["tags"])):
-        if state["tags"][t] > prev_state["tags"][t]:
-            if t == int(team):
-                reward += 3.0
+    for enemy_idx in enemy_indices:
+        enemy_pos = state["agent_position"][enemy_idx]
+        dist = np.linalg.norm(current_pos - enemy_pos)
+        if dist < nearest_enemy_dist:
+            nearest_enemy_dist = dist
+            nearest_enemy_pos = enemy_pos
     
-    # MILESTONE 3: Prevent enemy grab (-2.0 if enemy grabs)
-    for t in range(len(state["grabs"])):
-        if state["grabs"][t] > prev_state["grabs"][t]:
-            if t != int(team):  # enemy grabbed
-                reward -= 2.0
+    dist_to_own_flag = np.linalg.norm(current_pos - own_flag_pos)
     
-    # MILESTONE 4: Recover flag (+4.0) - enemy dropped it
-    # This is implicit in the game mechanics
+    # DENSE REWARD 1: Stay near own flag (but not too close)
+    if dist_to_own_flag < 0.5:
+        reward += 0.3
+    elif dist_to_own_flag > 1.0:
+        reward -= 0.1  # Penalty for wandering too far
     
-    # MILESTONE 5: Capture (defender contributes) (+8.0)
+    # DENSE REWARD 2: Move toward enemies that are near our flag
+    if nearest_enemy_pos is not None:
+        enemy_dist_to_our_flag = np.linalg.norm(nearest_enemy_pos - own_flag_pos)
+        if enemy_dist_to_our_flag < 0.6:  # Enemy is threatening
+            prev_enemy_dist = np.linalg.norm(prev_pos - nearest_enemy_pos)
+            intercept_progress = prev_enemy_dist - nearest_enemy_dist
+            reward += 1.5 * intercept_progress
+    
+    # Sparse rewards
     for t in range(len(state["captures"])):
         if state["captures"][t] > prev_state["captures"][t]:
-            reward += 8.0 if t == int(team) else -8.0
+            reward += 12.0 if t == int(team) else -12.0
     
-    # Penalty for wandering too far from own flag
-    on_enemy_side = (int(team) == 0 and x > mid_x) or (int(team) == 1 and x < mid_x)
-    if on_enemy_side:
-        reward -= 0.1
+    for t in range(len(state["grabs"])):
+        if state["grabs"][t] > prev_state["grabs"][t]:
+            if t != int(team):  # Enemy grabbed - defender failed
+                reward -= 3.0
     
-    # Anti-collapse
-    if np.linalg.norm(current_pos - prev_pos) < 0.03:
-        reward -= 0.2
-    
+    # Penalties
     if state["agent_oob"][idx] > prev_state["agent_oob"][idx]:
-        reward -= 1.0
+        reward -= 2.0
+    
+    movement = np.linalg.norm(current_pos - prev_pos)
+    if movement < 0.02:
+        reward -= 0.3
     
     return reward
