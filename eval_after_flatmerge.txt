@@ -37,55 +37,55 @@ Please consult config.py for variable names.
   eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
   eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
   eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
-[episode 10/10] blue_caps=0 red_caps=0 steps=600 role_switches={'agent_0': 41, 'agent_1': 34, 'agent_2': 44}
+[episode 10/10] blue_caps=0 red_caps=0 steps=600 role_switches={'agent_0': 34, 'agent_1': 41, 'agent_2': 40}
 
 === EVALUATION SUMMARY ===
 Blue win count: 0 / 10
 
 Role usage by blue worker:
   agent_0:
-    ATTACK = 2910 (48.5%)
-    DEFEND = 2015 (33.6%)
-    INTERCEPT = 1075 (17.9%)
+    ATTACK = 3105 (51.8%)
+    DEFEND = 1810 (30.2%)
+    INTERCEPT = 1085 (18.1%)
   agent_1:
-    ATTACK = 3400 (56.7%)
-    DEFEND = 1865 (31.1%)
-    INTERCEPT = 735 (12.2%)
+    ATTACK = 2820 (47.0%)
+    DEFEND = 2185 (36.4%)
+    INTERCEPT = 995 (16.6%)
   agent_2:
-    ATTACK = 2560 (42.7%)
-    DEFEND = 2215 (36.9%)
-    INTERCEPT = 1225 (20.4%)
+    ATTACK = 3045 (50.8%)
+    DEFEND = 2020 (33.7%)
+    INTERCEPT = 935 (15.6%)
 
 Territory occupancy by blue worker:
   agent_0:
-    home_side = 2420 (40.3%)
-    enemy_side = 3580 (59.7%)
+    home_side = 2636 (43.9%)
+    enemy_side = 3364 (56.1%)
     unknown_side = 0 (0.0%)
   agent_1:
-    home_side = 2816 (46.9%)
-    enemy_side = 3184 (53.1%)
+    home_side = 2356 (39.3%)
+    enemy_side = 3644 (60.7%)
     unknown_side = 0 (0.0%)
   agent_2:
-    home_side = 2291 (38.2%)
-    enemy_side = 3709 (61.8%)
+    home_side = 2507 (41.8%)
+    enemy_side = 3493 (58.2%)
     unknown_side = 0 (0.0%)
 
 Territory occupancy by current role:
   ATTACK:
-    home_side = 422 (46.9%)
-    enemy_side = 478 (53.1%)
+    home_side = 438 (48.7%)
+    enemy_side = 462 (51.3%)
     unknown_side = 0 (0.0%)
   DEFEND:
-    home_side = 133 (22.2%)
-    enemy_side = 467 (77.8%)
+    home_side = 134 (22.3%)
+    enemy_side = 466 (77.7%)
     unknown_side = 0 (0.0%)
   INTERCEPT:
-    home_side = 71 (23.7%)
-    enemy_side = 229 (76.3%)
+    home_side = 101 (33.7%)
+    enemy_side = 199 (66.3%)
     unknown_side = 0 (0.0%)
 
 Tags made by current role:
-  ATTACK = 1
+  ATTACK = 0
   DEFEND = 0
   INTERCEPT = 0
 
@@ -97,7 +97,7 @@ Flag-carry steps by current role:
 Role switches by blue worker:
   agent_0 = 0
   agent_1 = 0
-  agent_2 = 409
+  agent_2 = 439
 
 Commander reasons:
   PRESSURE_CYCLE = 150
