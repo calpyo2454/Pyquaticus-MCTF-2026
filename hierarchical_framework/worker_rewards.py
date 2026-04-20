@@ -275,6 +275,9 @@ def attacker_reward(agent_id, team, agents, state, prev_state) -> float:
     enemy_flag_pos = _get_team_flag_position(state, 1 - t)
     own_flag_pos = _get_team_flag_position(state, t)
 
+    has_flag = bool(_safe_get_array_value(state, "agent_has_flag", i, False))
+    prev_has_flag = bool(_safe_get_array_value(prev_state, "agent_has_flag", i, False))
+
     current_pos = _get_agent_position(state, i)
     prev_pos = _get_agent_position(prev_state, i)
     if current_pos is None or prev_pos is None:
