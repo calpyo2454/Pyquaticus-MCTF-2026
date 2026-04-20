@@ -54,7 +54,7 @@ def build_env_config():
     """Match the exact env config from training."""
     config_dict = config_dict_std.copy()
     config_dict.update({
-        "sim_speedup_factor": 4,
+        "sim_speedup_factor": 20,
         "max_score": 3,
         "max_time": 240,
         "tagging_cooldown": 60,
@@ -72,7 +72,7 @@ def build_env_config():
     
     return {
         "config_dict": config_dict,
-        "render_mode": "human",
+        "render_mode": None,
         "reward_config": reward_config,
         "team_size": 3,
     }
@@ -85,13 +85,9 @@ def make_env_creator(base_env_kwargs):
 
 
 def policy_mapping_fn(agent_id, episode, worker, **kwargs):
-    """Match the policy mapping from training."""
-    if agent_id == 'agent_0':
-        return "attacker-policy"
-    if agent_id == 'agent_1':
-        return "support-policy"
-    if agent_id == 'agent_2':
-        return "defender-policy"
+    """Match the policy mapping from training (shared-policy for dense rewards)."""
+    if agent_id in ['agent_0', 'agent_1', 'agent_2']:
+        return "shared-policy"
     return "random-policy"
 
 
@@ -117,6 +113,7 @@ if __name__ == '__main__':
     # Restore the full PPO algorithm
     print(f"Restoring checkpoint from: {args.checkpoint}")
     algo = PPO.from_checkpoint(os.path.abspath(args.checkpoint))
+    print(f"Checkpoint loaded. Algorithm type: {type(algo)}")
     
     # Create wrapped environment for deployment
     env = ParallelPettingZooWrapper(env_creator({}))
@@ -129,6 +126,7 @@ if __name__ == '__main__':
     max_step = 2500
     
     print("Starting deployment...")
+    print(f"Agents in environment: {list(obs.keys())}")
     
     while True:
         actions = {}
@@ -136,14 +134,17 @@ if __name__ == '__main__':
         # Get actions for each agent using the trained policies
         for agent_id in obs.keys():
             if agent_id in ['agent_0', 'agent_1', 'agent_2']:
-                # Use trained policy with correct policy_id
-                policy_id = policy_mapping_fn(agent_id, None, None)
+                # Use trained shared policy
+                if step == 0:
+                    print(f"Agent {agent_id} using shared-policy")
                 actions[agent_id] = algo.compute_single_action(
                     obs[agent_id],
-                    policy_id=policy_id
+                    policy_id="shared-policy"
                 )
             else:
                 # Use random policy for opponents
+                if step == 0:
+                    print(f"Agent {agent_id} using random policy")
                 actions[agent_id] = random_policy.compute_action(obs[agent_id])
         
         # Step environment

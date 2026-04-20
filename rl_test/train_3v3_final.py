@@ -28,7 +28,7 @@ LOGGER = logging.getLogger("pyquaticus_train")
 
 
 try:
-    from custom_rewards import combined_reward, tactical_reward, attacker_reward, support_reward, defender_reward
+    from custom_rewards import combined_reward, tactical_reward, attacker_reward, support_reward, defender_reward, dense_flag_reward, curriculum_reward
     CUSTOM_REWARDS_AVAILABLE = True
 except ImportError:
     CUSTOM_REWARDS_AVAILABLE = False
@@ -37,6 +37,8 @@ except ImportError:
     attacker_reward = None
     support_reward = None
     defender_reward = None
+    dense_flag_reward = None
+    curriculum_reward = None
 
 
 class RandomPolicy(Policy):
@@ -75,13 +77,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--opponents",
         choices=["random", "selfplay"],
-        default="random",
+        default="selfplay",
         help="Opponent policy setup",
     )
     parser.add_argument(
         "--reward",
-        choices=["basic", "combined", "tactical", "roles"],
-        default="combined",
+        choices=["basic", "combined", "tactical", "roles", "dense", "curriculum"],
+        default="dense",
         help="Reward function selection",
     )
     parser.add_argument(
@@ -132,7 +134,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--lr",
         type=float,
-        default=1e-4,
+        default=3e-3,
         help="Learning rate",
     )
     parser.add_argument(
@@ -188,6 +190,27 @@ def build_reward_config(reward_name: str) -> Dict[str, object]:
             "agent_4": None,
             "agent_5": None,
         }
+    elif reward_name == "dense" and CUSTOM_REWARDS_AVAILABLE:
+        LOGGER.info("Using dense shaping rewards for all agents")
+        return {
+            "agent_0": dense_flag_reward,  # Strong dense shaping
+            "agent_1": dense_flag_reward,  # Strong dense shaping
+            "agent_2": dense_flag_reward,  # Strong dense shaping
+            "agent_3": None,
+            "agent_4": None,
+            "agent_5": None,
+        }
+    elif reward_name == "curriculum" and CUSTOM_REWARDS_AVAILABLE:
+        LOGGER.info("Using curriculum learning rewards (stage 3 - full task)")
+        # Use lambda to set curriculum_stage=3 (full task)
+        return {
+            "agent_0": lambda *args, **kwargs: curriculum_reward(*args, **kwargs, curriculum_stage=3),
+            "agent_1": lambda *args, **kwargs: curriculum_reward(*args, **kwargs, curriculum_stage=3),
+            "agent_2": lambda *args, **kwargs: curriculum_reward(*args, **kwargs, curriculum_stage=3),
+            "agent_3": None,
+            "agent_4": None,
+            "agent_5": None,
+        }
     else:
         selected_reward = rew.caps_and_grabs
         if reward_name != "basic":
@@ -209,7 +232,7 @@ def build_base_env_config(render: bool, reward_config: Dict[str, object]) -> Dic
     config_dict = config_dict_std.copy()
     config_dict.update(
         {
-            "sim_speedup_factor": 4,
+            "sim_speedup_factor": 20,
             "max_score": 3,
             "max_time": 240,
             "tagging_cooldown": 60,
@@ -232,35 +255,53 @@ def make_env_creator(base_env_kwargs: Dict[str, object]):
     return env_creator
 
 
-def build_policy_mapping(opponents: str):
-    """Map agents to role-based policies: attacker, support, defender"""
+def build_policy_mapping(opponents: str, reward_type: str):
+    """Map agents to policies. For dense rewards, use single shared policy for all blue agents."""
     def policy_mapping_fn(agent_id, episode, worker, **kwargs):
-        if agent_id == 'agent_0':
-            return "attacker-policy"  # Primary flag chaser
-        if agent_id == 'agent_1':
-            return "support-policy"   # Screens/trails attacker
-        if agent_id == 'agent_2':
-            return "defender-policy"  # Protects own flag
+        if reward_type == "dense" or reward_type == "curriculum":
+            # Single shared policy for all blue agents with dense shaping
+            if agent_id in ['agent_0', 'agent_1', 'agent_2']:
+                return "shared-policy"
+        else:
+            # Role-based policies for milestone rewards
+            if agent_id == 'agent_0':
+                return "attacker-policy"  # Primary flag chaser
+            if agent_id == 'agent_1':
+                return "support-policy"   # Screens/trails attacker
+            if agent_id == 'agent_2':
+                return "defender-policy"  # Protects own flag
         # Red agents use random policy
         return "random-policy"
 
     return policy_mapping_fn
 
 
-def build_multiagent_config(opponents: str, policy_mapping_fn, obs_space, act_space):
-    """3 role-based policies: attacker, support, defender + random for opponents"""
-    policies = {
-        "attacker-policy": (None, obs_space, act_space, {"model": {"fcnet_hiddens": [256, 256, 128], "fcnet_activation": "relu"}}),
-        "support-policy": (None, obs_space, act_space, {"model": {"fcnet_hiddens": [256, 256, 128], "fcnet_activation": "relu"}}),
-        "defender-policy": (None, obs_space, act_space, {"model": {"fcnet_hiddens": [256, 256, 128], "fcnet_activation": "relu"}}),
-        "random-policy": (RandomPolicy, obs_space, act_space, {"no_checkpoint": True}),
-    }
-    
-    if opponents == "selfplay":
-        policies["red-policy"] = (None, obs_space, act_space, {"model": {"fcnet_hiddens": [256, 256, 128], "fcnet_activation": "relu"}})
-        policies_to_train = ["attacker-policy", "support-policy", "defender-policy", "red-policy"]
+def build_multiagent_config(opponents: str, policy_mapping_fn, obs_space, act_space, reward_type: str):
+    """Build policy config. For dense rewards, use single shared policy for all blue agents."""
+    if reward_type == "dense" or reward_type == "curriculum":
+        # Simplified: single shared policy for all blue agents
+        policies = {
+            "shared-policy": (None, obs_space, act_space, {"model": {"fcnet_hiddens": [256, 256, 128], "fcnet_activation": "relu"}}),
+            "random-policy": (RandomPolicy, obs_space, act_space, {"no_checkpoint": True}),
+        }
+        if opponents == "selfplay":
+            policies["red-policy"] = (None, obs_space, act_space, {"model": {"fcnet_hiddens": [256, 256, 128], "fcnet_activation": "relu"}})
+            policies_to_train = ["shared-policy", "red-policy"]
+        else:
+            policies_to_train = ["shared-policy"]
     else:
-        policies_to_train = ["attacker-policy", "support-policy", "defender-policy"]
+        # Role-based policies for milestone rewards
+        policies = {
+            "attacker-policy": (None, obs_space, act_space, {"model": {"fcnet_hiddens": [256, 256, 128], "fcnet_activation": "relu"}}),
+            "support-policy": (None, obs_space, act_space, {"model": {"fcnet_hiddens": [256, 256, 128], "fcnet_activation": "relu"}}),
+            "defender-policy": (None, obs_space, act_space, {"model": {"fcnet_hiddens": [256, 256, 128], "fcnet_activation": "relu"}}),
+            "random-policy": (RandomPolicy, obs_space, act_space, {"no_checkpoint": True}),
+        }
+        if opponents == "selfplay":
+            policies["red-policy"] = (None, obs_space, act_space, {"model": {"fcnet_hiddens": [256, 256, 128], "fcnet_activation": "relu"}})
+            policies_to_train = ["attacker-policy", "support-policy", "defender-policy", "red-policy"]
+        else:
+            policies_to_train = ["attacker-policy", "support-policy", "defender-policy"]
     
     return policies, policies_to_train
 
@@ -277,9 +318,9 @@ def build_algorithm(args: argparse.Namespace):
 
     register_env(args.env_name, lambda config: ParallelPettingZooWrapper(env_creator(config)))
 
-    policy_mapping_fn = build_policy_mapping(args.opponents)
+    policy_mapping_fn = build_policy_mapping(args.opponents, args.reward)
     policies, policies_to_train = build_multiagent_config(
-        args.opponents, policy_mapping_fn, obs_space, act_space
+        args.opponents, policy_mapping_fn, obs_space, act_space, args.reward
     )
 
     ppo_config = (
@@ -292,6 +333,8 @@ def build_algorithm(args: argparse.Namespace):
         .env_runners(
             num_env_runners=max(0, args.num_env_runners),
             num_cpus_per_env_runner=1,
+            sample_timeout_s=120.0,
+            rollout_fragment_length=200,
         )
         .resources(num_gpus=args.num_gpus)
         .framework("torch")
@@ -300,13 +343,13 @@ def build_algorithm(args: argparse.Namespace):
             train_batch_size=args.train_batch_size,
             minibatch_size=args.minibatch_size,
             num_epochs=10,
-            lr=5e-5,
+            lr=3e-3,  # Increased from 5e-4 for faster learning with dense rewards
             gamma=0.99,
             lambda_=0.95,
             clip_param=0.2,
-            grad_clip=0.5,
+            grad_clip=1.0,  # Increased from 0.5 for larger gradients from dense rewards
             vf_clip_param=10.0,
-            entropy_coeff=0.03,
+            entropy_coeff=0.01,  # Reduced from 0.1 for more deterministic behavior with dense shaping
             model={
                 "fcnet_hiddens": [256, 256, 128],
                 "fcnet_activation": "relu",
