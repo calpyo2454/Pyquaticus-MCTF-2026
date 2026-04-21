@@ -250,7 +250,18 @@ class HierarchicalTeamWrapper:
         self.possible_agents = list(getattr(base_env, "possible_agents", []))
         self.agents: List[str] = []
 
+        # Blue roles are assigned dynamically by the scripted commander.
+        # Red roles are fixed for now so a frozen checkpoint can run on red too.
+        self.static_red_roles: Dict[str, int] = {
+            self.red_team[0]: ATTACK,
+            self.red_team[1]: DEFEND,
+            self.red_team[2]: INTERCEPT,
+        }
+
         self.current_roles: Dict[str, int] = {aid: ATTACK for aid in self.blue_team}
+        self.current_roles.update(self.static_red_roles)
+
+
         self.last_config_index = None
         self.last_reason = "RESET_DEFAULT"
         self.steps_since_role_update = 0
@@ -269,6 +280,7 @@ class HierarchicalTeamWrapper:
         self.observation_spaces = {}
         self.action_spaces = {}
 
+        """
         for aid in self.possible_agents:
             if aid in self.blue_team:
                 low = np.full((self._base_obs_space.shape[0] + 3,), -np.inf, dtype=np.float32)
@@ -277,6 +289,12 @@ class HierarchicalTeamWrapper:
             else:
                 self.observation_spaces[aid] = self._base_obs_space
 
+            self.action_spaces[aid] = self._base_act_space
+        """
+        for aid in self.possible_agents:
+            low = np.full((self._base_obs_space.shape[0] + 3,), -np.inf, dtype=np.float32)
+            high = np.full((self._base_obs_space.shape[0] + 3,), np.inf, dtype=np.float32)
+            self.observation_spaces[aid] = gym.spaces.Box(low=low, high=high, dtype=np.float32)
             self.action_spaces[aid] = self._base_act_space
 
         # Commander-style observation is not exposed as an RL agent in this baseline,
@@ -337,7 +355,9 @@ class HierarchicalTeamWrapper:
         agents = list(getattr(self.base_env, "agents", self.blue_team + self.red_team))
         assignments, config_index, reason = self.scripted_commander.assign_roles(state, agents)
 
-        role_changed = assignments != self.current_roles
+        prev_blue_roles = {aid: self.current_roles[aid] for aid in self.blue_team}
+        assignments, config_index, reason = self.scripted_commander.assign_roles(state, agents)
+        role_changed = assignments != prev_blue_roles
 
         for aid in self.blue_team:
             self.current_roles[aid] = int(assignments[aid])
@@ -360,20 +380,17 @@ class HierarchicalTeamWrapper:
 
     def _augment_worker_observation(self, agent_id: str, obs: np.ndarray) -> np.ndarray:
         """
-        Append role one-hot to blue worker observations.
+        Append role one-hot to all agent observations.
 
-        Why this method exists:
-        - The shared PPO worker must know which role it is currently expected
-          to fulfill.
-        - Red agents are left unchanged in this baseline.
+        Why this change exists:
+        - Blue uses dynamic roles from the scripted commander.
+        - Red uses static fixed roles for frozen-checkpoint opponents.
+        - This makes both sides compatible with the same role-head worker model.
         """
         obs = np.asarray(obs, dtype=np.float32)
-
-        if agent_id in self.blue_team:
-            role_vec = _role_one_hot(self.current_roles[agent_id])
-            return np.concatenate([obs, role_vec], axis=0)
-
-        return obs
+        role_id = self.current_roles.get(agent_id, ATTACK)
+        role_vec = _role_one_hot(role_id)
+        return np.concatenate([obs, role_vec], axis=0)
 
     def _build_debug_commander_observation(self) -> np.ndarray:
         """
@@ -407,6 +424,7 @@ class HierarchicalTeamWrapper:
         obs, info = self.base_env.reset(seed=seed, options=options)
 
         self.current_roles = {aid: ATTACK for aid in self.blue_team}
+        self.current_roles.update(self.static_red_roles)
         self.last_config_index = None
         self.last_reason = "RESET_DEFAULT"
         self.steps_since_role_update = 0

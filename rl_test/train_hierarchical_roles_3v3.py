@@ -41,6 +41,8 @@ from hierarchical_framework.hierarchical_team_wrapper import (
     SharedEncoderRoleHeadModel,
 )
 
+USE_FROZEN_OPPONENT = False
+
 
 class RandPolicy(Policy):
     """
@@ -128,14 +130,12 @@ def env_creator(env_config):
 
 def policy_mapping_fn(agent_id, episode, **kwargs):
     """
-    Map blue workers to the shared PPO policy and red workers to random policy.
-
-    Why this method exists:
-    - This is the core of shared worker PPO training in the scripted baseline.
+    Map blue workers to the trainable worker policy.
+    Map red workers either to a frozen opponent checkpoint policy or random policy.
     """
     if agent_id in ["agent_0", "agent_1", "agent_2"]:
         return "worker_policy"
-    return "random_policy"
+    return "opponent_policy" if USE_FROZEN_OPPONENT else "random_policy"
 
 
 def main():
@@ -153,7 +153,11 @@ def main():
     parser.add_argument("--checkpoint-every", type=int, default=50)
     parser.add_argument("--role-period", type=int, default=10)
     parser.add_argument("--render", action="store_true")
+    parser.add_argument("--frozen-opponent-checkpoint", type=str, default=None)
     args = parser.parse_args()
+
+    global USE_FROZEN_OPPONENT
+    USE_FROZEN_OPPONENT = args.frozen_opponent_checkpoint is not None
 
     logging.basicConfig(level=logging.ERROR)
     os.makedirs(args.save_dir, exist_ok=True)
@@ -200,6 +204,20 @@ def main():
             None,
             worker_obs_space,
             worker_act_space,
+            {
+                "model": {
+                    "custom_model": "shared_encoder_role_heads",
+                    "custom_model_config": {
+                        "hidden_dim": 256,
+                        "head_dim": 128,
+                    },
+                }
+            },
+        ),
+        "opponent_policy": (
+            None,
+            red_obs_space,
+            red_act_space,
             {
                 "model": {
                     "custom_model": "shared_encoder_role_heads",
@@ -259,6 +277,23 @@ def main():
     )
 
     algo = algo_config.build()
+
+    if args.frozen_opponent_checkpoint:
+        frozen_path = os.path.abspath(args.frozen_opponent_checkpoint)
+        if not os.path.exists(frozen_path):
+            raise FileNotFoundError(frozen_path)
+
+        print(f"Loading frozen opponent from: {frozen_path}")
+
+        # Build a temporary algorithm with the same config so we can restore
+        # the frozen checkpoint and copy its worker_policy weights.
+        frozen_algo = algo_config.build()
+        frozen_algo.restore(frozen_path)
+
+        frozen_weights = frozen_algo.get_policy("worker_policy").get_weights()
+        algo.get_policy("opponent_policy").set_weights(frozen_weights)
+
+        frozen_algo.stop()
 
     if args.checkpoint:
         print(f"Restoring from checkpoint: {args.checkpoint}")
