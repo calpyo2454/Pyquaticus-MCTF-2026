@@ -70,7 +70,7 @@ class RandPolicy(Policy):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train a 3v3 policy in a 3v3 PyQuaticus environment')
     parser.add_argument('--render', help='Enable rendering', action='store_true')
-    reward_config = {'agent_0':rew.caps_and_grabs, 'agent_1':rew.caps_and_grabs, 'agent_2':rew.caps_and_grabs, 'agent_3':None, 'agent_4':None, 'agent_5':None} # Example Reward Config
+    reward_config = {'agent_0':rew.better_ctf_reward, 'agent_1':rew.better_ctf_reward, 'agent_2':rew.better_ctf_reward, 'agent_3':None, 'agent_4':None, 'agent_5':None} # Example Reward Config
     #Competitors: reward_config should be updated to reflect how you want to reward your learning agent
     
     args = parser.parse_args()
@@ -117,10 +117,12 @@ if __name__ == '__main__':
     for i in range(8001):
         print("Looping: ", i)
         start = time.time()
-        algo.train()
+        result = algo.train()
+        print("Keys:", result.keys())
+        print("Reward:", result["env_runners"]["episode_reward_mean"])
         end = time.time()
         print("End Loop: ", end-start)
-        if np.mod(i, 500) == 0:
+        if np.mod(i, 10) == 0:
             print("Saving Checkpoint: ", i)
             chkpt_file = algo.save('./ray_test/iter_'+str(i)+'/')
     

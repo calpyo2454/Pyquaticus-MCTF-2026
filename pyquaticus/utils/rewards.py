@@ -158,7 +158,7 @@
 """
 
 import math
-import numpy
+import numpy as np
 
 from pyquaticus.structs import Team
 from pyquaticus.utils.utils import *
@@ -222,3 +222,129 @@ def caps_and_grabs(
     return reward
 
 ### Add Custom Reward Functions Here ###
+def simple_ctf_reward(
+    agent_id: str,
+    team: Team,
+    agents: list,
+    agent_inds_of_team: dict,
+    state: dict,
+    prev_state: dict,
+    env_size: np.ndarray,
+    agent_radius: np.ndarray,
+    catch_radius: float,
+    scrimmage_coords: np.ndarray,
+    max_speeds: list,
+    tagging_cooldown: float
+):
+    reward = 0.0
+
+    idx = agents.index(agent_id)
+
+    # current + previous positions
+    pos = state['agent_position'][idx]
+    prev_pos = prev_state['agent_position'][idx]
+
+    # ----------------------------
+    # 1. Move toward enemy flag
+    # ----------------------------
+    enemy_team = 1 if int(team) == 0 else 0
+    flag_pos = state['flag_position'][enemy_team]
+
+    dist_now = np.linalg.norm(pos - flag_pos)
+    dist_prev = np.linalg.norm(prev_pos - flag_pos)
+
+    if dist_now < dist_prev:
+        reward += 0.01
+    else:
+        reward -= 0.01
+
+    # ----------------------------
+    # 2. Reward grabbing flag
+    # ----------------------------
+    if state['agent_has_flag'][idx] and not prev_state['agent_has_flag'][idx]:
+        reward += 1.0
+
+    # ----------------------------
+    # 3. Punish getting tagged
+    # ----------------------------
+    if state['agent_is_tagged'][idx] and not prev_state['agent_is_tagged'][idx]:
+        reward -= 0.5
+
+    return reward
+
+
+def better_ctf_reward(
+    agent_id: str,
+    team: Team,
+    agents: list,
+    agent_inds_of_team: dict,
+    state: dict,
+    prev_state: dict,
+    env_size: np.ndarray,
+    agent_radius: np.ndarray,
+    catch_radius: float,
+    scrimmage_coords: np.ndarray,
+    max_speeds: list,
+    tagging_cooldown: float
+):
+    reward = 0.0
+    idx = agents.index(agent_id)
+
+    pos = state['agent_position'][idx]
+    prev_pos = prev_state['agent_position'][idx]
+
+    has_flag = state['agent_has_flag'][idx]
+    prev_has_flag = prev_state['agent_has_flag'][idx]
+
+    # ----------------------------
+    # 1. TARGET: flag OR home
+    # ----------------------------
+    if has_flag:
+        # go home
+        home_pos = state['flag_home'][int(team)]
+        target = home_pos
+    else:
+        # go to enemy flag
+        enemy_team = 1 if int(team) == 0 else 0
+        target = state['flag_position'][enemy_team]
+
+    dist_now = np.linalg.norm(pos - target)
+    dist_prev = np.linalg.norm(prev_pos - target)
+
+    if dist_now < dist_prev:
+        reward += 0.02   # stronger than before
+    else:
+        reward -= 0.01
+
+    # ----------------------------
+    # 2. Grab flag
+    # ----------------------------
+    if has_flag and not prev_has_flag:
+        reward += 2.0   # BIG reward → encourages success
+
+    # ----------------------------
+    # 3. Capture (win)
+    # ----------------------------
+    for t in range(len(state['captures'])):
+        if state['captures'][t] > prev_state['captures'][t]:
+            reward += 5.0 if t == int(team) else -5.0
+
+    # ----------------------------
+    # 4. Tagging enemies
+    # ----------------------------
+    if state['agent_made_tag'][idx] is not None:
+        reward += 0.5
+
+    # ----------------------------
+    # 5. Getting tagged
+    # ----------------------------
+    if state['agent_is_tagged'][idx] and not prev_state['agent_is_tagged'][idx]:
+        reward -= 1.0
+
+    # ----------------------------
+    # 6. Out of bounds
+    # ----------------------------
+    if state['agent_oob'][idx] and not prev_state['agent_oob'][idx]:
+        reward -= 0.5
+
+    return reward
