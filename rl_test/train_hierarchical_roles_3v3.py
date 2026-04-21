@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import time
 
 import ray
 from ray.rllib.algorithms.ppo import PPOConfig
@@ -298,9 +299,15 @@ def main():
     if args.checkpoint:
         print(f"Restoring from checkpoint: {args.checkpoint}")
         algo.restore(args.checkpoint)
+    
+    training_loop_start = time.perf_counter()
+    iteration_times = []
 
     for i in range(args.iterations):
+        iter_start = time.perf_counter()
         result = algo.train()
+        iter_end = time.perf_counter()
+        iteration_times.append(iter_end - iter_start)
 
         if i == 0:
             print("top-level result keys:", sorted(result.keys()))
@@ -326,6 +333,15 @@ def main():
             save_result = algo.save(args.save_dir)
             checkpoint_path = save_result.checkpoint.path
             print(f"Saved checkpoint at iter {i}: {checkpoint_path}")
+
+    training_loop_end = time.perf_counter()
+    total_training_time = training_loop_end - training_loop_start
+    avg_iteration_time = total_training_time / max(len(iteration_times), 1)
+
+    print("\n=== TRAINING TIME SUMMARY ===")
+    print(f"Total training iteration wall time: {total_training_time:.2f} seconds")
+    print(f"Average wall time per iteration: {avg_iteration_time:.2f} seconds")
+    print(f"Completed iterations: {len(iteration_times)}")
 
     final_save_result = algo.save(args.save_dir)
     final_checkpoint_path = final_save_result.checkpoint.path
