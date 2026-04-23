@@ -71,34 +71,30 @@ class ScriptedCommander:
       behavior before introducing a learned commander policy.
     """
 
-    def __init__(self, blue_team: List[str], red_team: List[str]):
+    def __init__(self, my_team: List[str], enemy_team: List[str], home_side_idx: int):
         """
-        Store team membership and initialize a simple formation cycle.
+        Generic scripted commander for one team.
 
-        Why this method exists:
-        - The scripted commander should not stay in one formation forever when
-        the game state is quiet.
-        - Cycling formations is a deliberate baseline trick that helps verify
-        the shared worker actually responds to role changes.
+        my_team:
+        - the team this commander assigns roles for
+
+        enemy_team:
+        - the opposing team
+
+        home_side_idx:
+        - which side index in agent_on_sides corresponds to this team's home side
+        (0 for blue, 1 for red)
         """
-        self.blue_team = list(blue_team)
-        self.red_team = list(red_team)
+        self.my_team = list(my_team)
+        self.enemy_team = list(enemy_team)
+        self.home_side_idx = int(home_side_idx)
 
-        # Counts how many commander decisions have been made.
         self.decision_count = 0
-
-        # Cycle through a few legal formations when no high-priority event is present.
-        self.default_cycle = [0, 1, 2, 5]  # balanced, offense, defense, aggressive pressure
-        self.default_cycle_reason = {
-            0: "BALANCED_DEFAULT",
-            1: "OFFENSE_CYCLE",
-            2: "DEFENSE_CYCLE",
-            5: "PRESSURE_CYCLE",
-        }
-
-        # Hold each default formation for a few commander refreshes before switching.
-        # With role_period=5 and default_hold=3, each formation lasts 15 env steps.
-        self.default_hold = 3
+        self.default_config_index = 0  # (ATTACK, DEFEND, INTERCEPT)
+        self.last_config_index = self.default_config_index
+        self.last_reason = "BALANCED_DEFAULT"
+        self.min_event_dwell = 3
+        self.remaining_event_dwell = 0
 
     def _idx(self, agents: List[str], agent_id: str) -> int:
         """
@@ -148,7 +144,7 @@ class ScriptedCommander:
         best_agent = None
         best_distance = float("inf")
 
-        for aid in self.blue_team:
+        for aid in self.my_team:
             if aid in exclude:
                 continue
             i = self._idx(agents, aid)
@@ -181,12 +177,12 @@ class ScriptedCommander:
         """
         Return blue agents sorted by distance to a target position.
 
-        Why this method exists:
+        Why this method exists:_closest_blue_to_position
         - Quiet-state role assignment should pick roles based on geometry instead
         of fixed agent ordering whenever possible.
         """
         scored = []
-        for aid in self.blue_team:
+        for aid in self.my_team:
             i = self._idx(agents, aid)
             pos = state["agent_position"][i]
             d = euclidean_distance(pos, target_pos)
@@ -194,148 +190,137 @@ class ScriptedCommander:
         scored.sort(key=lambda x: x[0])
         return [aid for _, aid in scored]
 
-    def _count_red_pressure_on_blue_side(self, state: dict, agents: List[str]) -> int:
+    def _count_enemy_pressure_on_home_side(self, state: dict, agents: List[str]) -> int:
         """
-        Count how many red agents are currently on the blue side.
-
-        Why this method exists:
-        - It gives the scripted commander a simple pressure signal.
-        - If multiple red agents are pushing deep, the commander can shift
-        to a more defensive formation.
-
-        Important note:
-        - Some branches expose agent_on_sides, some may not.
-        - If that field is unavailable, we return 0 instead of crashing.
+        Count how many enemy agents are currently on this commander's home side.
         """
         if "agent_on_sides" not in state:
             return 0
 
         pressure = 0
-        for aid in self.red_team:
+        for aid in self.enemy_team:
             i = self._idx(agents, aid)
-            if int(state["agent_on_sides"][i]) == 0:
-                pressure += 1
+            try:
+                if int(state["agent_on_sides"][i]) == self.home_side_idx:
+                    pressure += 1
+            except Exception:
+                pass
         return pressure
 
     def choose_config_index(self, state: dict, agents: List[str]) -> Tuple[int, str]:
         """
-        Pick a role configuration index using a small rule tree.
-
-        Priority:
-        1) If blue has the enemy flag -> defense tilt / escort return
-        2) If red has blue's flag -> chase / recovery
-        3) If red pressure is high on blue side -> heavy defense
-        4) Otherwise cycle through several safe default formations
-
-        Why this method exists:
-        - The previous version stayed in BALANCED_DEFAULT too often.
-        - This version intentionally varies the commander output even when no
-        flag event has happened yet, which is useful for testing whether the
-        shared worker obeys role conditioning.
+        Event-driven formation selection for whichever team this commander controls.
         """
         self.decision_count += 1
 
-        blue_carrier = self._find_flag_carrier(state, agents, self.blue_team)
-        red_carrier = self._find_flag_carrier(state, agents, self.red_team)
+        my_carrier = self._find_flag_carrier(state, agents, self.my_team)
+        enemy_carrier = self._find_flag_carrier(state, agents, self.enemy_team)
 
-        blue_has_flag = blue_carrier is not None
-        red_has_flag = red_carrier is not None
+        my_has_flag = my_carrier is not None
+        enemy_has_flag = enemy_carrier is not None
 
-        # High-priority event: blue is returning with flag.
-        if blue_has_flag:
-            return 2, "BLUE_HAS_FLAG"
+        desired_config = self.default_config_index
+        desired_reason = "BALANCED_DEFAULT"
 
-        # High-priority event: red is carrying blue's flag.
-        if red_has_flag:
-            return 3, "RED_HAS_FLAG"
+        if my_has_flag:
+            desired_config = 2
+            desired_reason = "MY_TEAM_HAS_FLAG"
+        elif enemy_has_flag:
+            desired_config = 3
+            desired_reason = "ENEMY_HAS_FLAG"
+        else:
+            enemy_pressure = self._count_enemy_pressure_on_home_side(state, agents)
+            if enemy_pressure >= 2:
+                desired_config = 4
+                desired_reason = "ENEMY_PRESSURE"
 
-        # Secondary event: red pressure near blue side.
-        red_pressure = self._count_red_pressure_on_blue_side(state, agents)
-        if red_pressure >= 2:
-            return 4, "RED_PRESSURE"
+        if desired_config == self.last_config_index:
+            if self.remaining_event_dwell > 0:
+                self.remaining_event_dwell -= 1
+            self.last_reason = desired_reason
+            return desired_config, desired_reason
 
-        # Quiet-state fallback: rotate among several formations.
-        cycle_index = ((self.decision_count - 1) // self.default_hold) % len(self.default_cycle)
-        config_index = self.default_cycle[cycle_index]
-        reason = self.default_cycle_reason[config_index]
-        return config_index, reason
+        if desired_reason in {"MY_TEAM_HAS_FLAG", "ENEMY_HAS_FLAG", "ENEMY_PRESSURE"}:
+            self.last_config_index = desired_config
+            self.last_reason = desired_reason
+            self.remaining_event_dwell = self.min_event_dwell - 1
+            return desired_config, desired_reason
+
+        if self.remaining_event_dwell > 0:
+            self.remaining_event_dwell -= 1
+            return self.last_config_index, self.last_reason
+
+        self.last_config_index = desired_config
+        self.last_reason = desired_reason
+        return desired_config, desired_reason
 
     def assign_roles(self, state: dict, agents: List[str]) -> Tuple[Dict[str, int], int, str]:
         """
-        Produce explicit blue-team role assignments.
-
-        Returns:
-        - assignments: dict mapping blue worker id -> role id
-        - config index: which ROLE_CONFIGS entry was chosen
-        - reason: string explaining the tactical mode
-
-        Why this method exists:
-        - The commander chooses a formation first.
-        - Then this method decides which specific blue worker gets which role.
-        - In quiet states, we rotate role ownership among agents so evaluation
-        can confirm the shared worker reacts to role changes.
+        Assign ATTACK / DEFEND / INTERCEPT roles to this commander's team.
         """
         config_index, reason = self.choose_config_index(state, agents)
         config = ROLE_CONFIGS[config_index]
 
-        # Case 1: blue carrier should always be ATTACK.
-        blue_carrier = self._find_flag_carrier(state, agents, self.blue_team)
-        if blue_carrier is not None:
-            assignments = {aid: DEFEND for aid in self.blue_team}
-            assignments[blue_carrier] = ATTACK
+        # If my team has carrier, carrier becomes ATTACK.
+        my_carrier = self._find_flag_carrier(state, agents, self.my_team)
+        if my_carrier is not None:
+            assignments = {aid: DEFEND for aid in self.my_team}
+            assignments[my_carrier] = ATTACK
 
-            others = [aid for aid in self.blue_team if aid != blue_carrier]
+            others = [aid for aid in self.my_team if aid != my_carrier]
             if len(others) == 2:
                 assignments[others[0]] = DEFEND
                 assignments[others[1]] = INTERCEPT
 
             return assignments, config_index, reason
 
-        # Case 2: if red has blue's flag, nearest blue becomes INTERCEPT.
-        red_carrier = self._find_flag_carrier(state, agents, self.red_team)
-        if red_carrier is not None:
-            red_i = self._idx(agents, red_carrier)
-            red_pos = state["agent_position"][red_i]
+        # If enemy has carrier, nearest teammate becomes INTERCEPT.
+        enemy_carrier = self._find_flag_carrier(state, agents, self.enemy_team)
+        if enemy_carrier is not None:
+            enemy_i = self._idx(agents, enemy_carrier)
+            enemy_pos = state["agent_position"][enemy_i]
 
-            closest = self._closest_blue_to_position(state, agents, red_pos)
-            assignments = {aid: ATTACK for aid in self.blue_team}
+            closest = None
+            best_distance = float("inf")
+            for aid in self.my_team:
+                i = self._idx(agents, aid)
+                d = euclidean_distance(state["agent_position"][i], enemy_pos)
+                if d < best_distance:
+                    best_distance = d
+                    closest = aid
 
+            assignments = {aid: ATTACK for aid in self.my_team}
             if closest is not None:
                 assignments[closest] = INTERCEPT
-                remaining = [aid for aid in self.blue_team if aid != closest]
+                remaining = [aid for aid in self.my_team if aid != closest]
                 if len(remaining) == 2:
                     assignments[remaining[0]] = DEFEND
                     assignments[remaining[1]] = ATTACK
 
             return assignments, config_index, reason
 
-        # Case 3: quiet state -> assign roles using geometry first, then fall back to rotation.
-        own_flag_pos = self._get_team_flag_position(state, 0)   # blue flag
-        enemy_flag_pos = self._get_team_flag_position(state, 1) # red flag
+        # Quiet state -> assign by geometry to home/enemy flags if possible.
+        own_flag_pos = self._get_team_flag_position(state, self.home_side_idx)
+        enemy_flag_pos = self._get_team_flag_position(state, 1 - self.home_side_idx)
 
-        # If flag positions are unavailable, keep the old rotation fallback.
         if own_flag_pos is None or enemy_flag_pos is None:
-            rotation = (self.decision_count - 1) % len(self.blue_team)
-            rotated_blue = self.blue_team[rotation:] + self.blue_team[:rotation]
             assignments = {
-                rotated_blue[0]: config[0],
-                rotated_blue[1]: config[1],
-                rotated_blue[2]: config[2],
+                self.my_team[0]: config[0],
+                self.my_team[1]: config[1],
+                self.my_team[2]: config[2],
             }
             return assignments, config_index, reason
 
-        # Sort blue agents by tactical relevance.
         by_enemy_flag = self._sorted_blue_by_distance_to(state, agents, enemy_flag_pos)
         by_own_flag = self._sorted_blue_by_distance_to(state, agents, own_flag_pos)
 
-        remaining = list(self.blue_team)
+        remaining = list(self.my_team)
         assignments: Dict[str, int] = {}
 
         attack_slots = sum(1 for r in config if r == ATTACK)
         defend_slots = sum(1 for r in config if r == DEFEND)
         intercept_slots = sum(1 for r in config if r == INTERCEPT)
 
-        # Assign ATTACK roles to those closest to enemy flag.
         for aid in by_enemy_flag:
             if attack_slots <= 0:
                 break
@@ -344,7 +329,6 @@ class ScriptedCommander:
                 remaining.remove(aid)
                 attack_slots -= 1
 
-        # Assign DEFEND roles to those closest to own flag from remaining workers.
         for aid in by_own_flag:
             if defend_slots <= 0:
                 break
@@ -353,14 +337,12 @@ class ScriptedCommander:
                 remaining.remove(aid)
                 defend_slots -= 1
 
-        # Any remaining workers become INTERCEPT.
         for aid in list(remaining):
             if intercept_slots > 0:
                 assignments[aid] = INTERCEPT
                 remaining.remove(aid)
                 intercept_slots -= 1
 
-        # Safety fallback: if any workers remain for any reason, give them ATTACK.
         for aid in remaining:
             assignments[aid] = ATTACK
 

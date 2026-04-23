@@ -106,7 +106,8 @@ def make_raw_hierarchical_env(env_config):
         config_dict=config_dict,
         render_mode=render_mode,
         reward_config=env_config.get("reward_config", None),
-        team_size=env_config.get("team_size", 3),
+        #team_size=env_config.get("team_size", 3),
+        team_size=3,
     )
 
     return HierarchicalTeamWrapper(

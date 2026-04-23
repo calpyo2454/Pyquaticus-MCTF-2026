@@ -38,6 +38,8 @@ from hierarchical_framework.hierarchical_team_wrapper import (
     SharedEncoderRoleHeadModel,
 )
 
+USE_FROZEN_OPPONENT = False
+
 
 class RandPolicy(Policy):
     """
@@ -118,15 +120,9 @@ def env_creator(env_config):
 
 
 def policy_mapping_fn(agent_id, episode, **kwargs):
-    """
-    Match blue workers to the trained worker policy and red workers to random.
-
-    Why this method exists:
-    - Evaluation must mirror the same role of each policy used during training.
-    """
     if agent_id in ["agent_0", "agent_1", "agent_2"]:
         return "worker_policy"
-    return "random_policy"
+    return "opponent_policy" if USE_FROZEN_OPPONENT else "random_policy"
 
 def _agent_index_from_id(agent_id: str) -> int:
     """
@@ -273,14 +269,16 @@ def evaluate_episode(algo, env, render: bool = False):
         actions = {}
 
         for aid in active_agents:
-            if aid in blue_agents:
+            if aid in ["agent_0", "agent_1", "agent_2"]:
                 action = algo.compute_single_action(obs[aid], policy_id="worker_policy")
                 actions[aid] = action
             else:
-                # The red side is a random baseline in evaluation.
-                # Sample from the underlying wrapped parallel env.
-                action = env.par_env.action_space(aid).sample()
-                actions[aid] = action
+                if USE_FROZEN_OPPONENT:
+                    action = algo.compute_single_action(obs[aid], policy_id="opponent_policy")
+                    actions[aid] = action
+                else:
+                    action = env.par_env.action_space(aid).sample()
+                    actions[aid] = action
 
         obs, rewards, terminated, truncated, info = env.step(actions)
 
@@ -398,7 +396,11 @@ def main():
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--role-period", type=int, default=10)
     parser.add_argument("--render", action="store_true")
+    parser.add_argument("--frozen-opponent-checkpoint", type=str, default=None)
     args = parser.parse_args()
+
+    global USE_FROZEN_OPPONENT
+    USE_FROZEN_OPPONENT = args.frozen_opponent_checkpoint is not None
 
     checkpoint_path = os.path.abspath(args.checkpoint)
     if not os.path.exists(args.checkpoint):
@@ -456,6 +458,20 @@ def main():
                 }
             },
         ),
+        "opponent_policy": (
+            None,
+            red_obs_space,
+            red_act_space,
+            {
+                "model": {
+                    "custom_model": "shared_encoder_role_heads",
+                    "custom_model_config": {
+                        "hidden_dim": 256,
+                        "head_dim": 128,
+                    },
+                }
+            },
+        ),
         "random_policy": (
             RandPolicy,
             red_obs_space,
@@ -483,6 +499,20 @@ def main():
     algo = algo_config.build()
     #algo.restore(args.checkpoint)
     algo.restore(checkpoint_path)
+
+    if args.frozen_opponent_checkpoint:
+        frozen_path = os.path.abspath(args.frozen_opponent_checkpoint)
+    if not os.path.exists(frozen_path):
+        raise FileNotFoundError(frozen_path)
+
+    print(f"Loading frozen opponent from: {frozen_path}")
+    frozen_algo = algo_config.build()
+    frozen_algo.restore(frozen_path)
+
+    frozen_weights = frozen_algo.get_policy("worker_policy").get_weights()
+    algo.get_policy("opponent_policy").set_weights(frozen_weights)
+
+    frozen_algo.stop()
 
     env = env_creator(env_config)
 

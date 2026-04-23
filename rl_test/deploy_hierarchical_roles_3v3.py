@@ -26,6 +26,8 @@ from hierarchical_framework.hierarchical_team_wrapper import (
     SharedEncoderRoleHeadModel,
 )
 
+USE_FROZEN_OPPONENT = False
+
 class RandPolicy(Policy):
     """
     Random baseline policy used only so the restored PPO algorithm has the same
@@ -93,7 +95,7 @@ def policy_mapping_fn(agent_id, episode, **kwargs):
     """
     if agent_id in ["agent_0", "agent_1", "agent_2"]:
         return "worker_policy"
-    return "random_policy"
+    return "opponent_policy" if USE_FROZEN_OPPONENT else "random_policy"
 
 
 def build_env_config(role_period: int, render_mode: str):
@@ -123,11 +125,29 @@ if __name__ == "__main__":
     parser.add_argument("--max-steps", type=int, default=2500, help="Maximum total steps before exit")
     parser.add_argument("--print-every", type=int, default=50, help="How often to print blue-role debug info")
     parser.add_argument("--env-name", type=str, default="pyquaticus_hierarchical_roles_3v3", help="Registered env name")
+    parser.add_argument("--frozen-opponent-checkpoint", type=str, default=None)
     args = parser.parse_args()
+
+    #global USE_FROZEN_OPPONENT
+    USE_FROZEN_OPPONENT = args.frozen_opponent_checkpoint is not None
 
     checkpoint_path = os.path.abspath(args.checkpoint)
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(checkpoint_path)
+
+    if args.frozen_opponent_checkpoint:
+        frozen_path = os.path.abspath(args.frozen_opponent_checkpoint)
+    if not os.path.exists(frozen_path):
+        raise FileNotFoundError(frozen_path)
+
+    print(f"Loading frozen opponent from: {frozen_path}")
+    frozen_algo = algo_config.build()
+    frozen_algo.restore(frozen_path)
+
+    frozen_weights = frozen_algo.get_policy("worker_policy").get_weights()
+    algo.get_policy("opponent_policy").set_weights(frozen_weights)
+
+    frozen_algo.stop()
 
     # Register the exact env name used by the hierarchical setup.
     # This also avoids mismatch if anything in restore references the original env string.
@@ -207,7 +227,13 @@ if __name__ == "__main__":
                     policy_id="worker_policy",
                 )
             else:
-                actions[agent_id] = env.par_env.action_space(agent_id).sample()
+                if USE_FROZEN_OPPONENT:
+                    actions[agent_id] = algo.compute_single_action(
+                        obs[agent_id],
+                        policy_id="opponent_policy",
+                    )
+                else:
+                    actions[agent_id] = env.par_env.action_space(agent_id).sample()
 
         obs, reward, term, trunc, info = env.step(actions)
 

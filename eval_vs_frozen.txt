@@ -1,0 +1,109 @@
+Warning! Config variable 'team_size' not recognized (it will have no effect).
+Please consult config.py for variable names.
+
+Warning! Config variable 'team_size' not recognized (it will have no effect).
+Please consult config.py for variable names.
+
+Loading frozen opponent from: /data/CS-491/Pyquaticus-MCTF-2026/hierarchical_checkpoints_roleheads
+Warning! Config variable 'team_size' not recognized (it will have no effect).
+Please consult config.py for variable names.
+
+Warning! Config variable 'team_size' not recognized (it will have no effect).
+Please consult config.py for variable names.
+
+  eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+  eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5']
+[episode 10/10] blue_caps=0 red_caps=0 steps=600 role_switches={'agent_0': 11, 'agent_1': 4, 'agent_2': 13}
+
+=== EVALUATION SUMMARY ===
+Blue win count: 0 / 10
+
+Role usage by blue worker:
+  agent_0:
+    ATTACK = 1095 (18.2%)
+    DEFEND = 2775 (46.2%)
+    INTERCEPT = 2130 (35.5%)
+  agent_1:
+    ATTACK = 2505 (41.8%)
+    DEFEND = 2050 (34.2%)
+    INTERCEPT = 1445 (24.1%)
+  agent_2:
+    ATTACK = 1485 (24.8%)
+    DEFEND = 2090 (34.8%)
+    INTERCEPT = 2425 (40.4%)
+
+Territory occupancy by blue worker:
+  agent_0:
+    home_side = 789 (13.2%)
+    enemy_side = 5211 (86.8%)
+    unknown_side = 0 (0.0%)
+  agent_1:
+    home_side = 1598 (26.6%)
+    enemy_side = 4402 (73.4%)
+    unknown_side = 0 (0.0%)
+  agent_2:
+    home_side = 873 (14.6%)
+    enemy_side = 5127 (85.5%)
+    unknown_side = 0 (0.0%)
+
+Territory occupancy by current role:
+  ATTACK:
+    home_side = 198 (50.1%)
+    enemy_side = 197 (49.9%)
+    unknown_side = 0 (0.0%)
+  DEFEND:
+    home_side = 0 (0.0%)
+    enemy_side = 805 (100.0%)
+    unknown_side = 0 (0.0%)
+  INTERCEPT:
+    home_side = 0 (0.0%)
+    enemy_side = 600 (100.0%)
+    unknown_side = 0 (0.0%)
+
+Tags made by current role:
+  ATTACK = 0
+  DEFEND = 2
+  INTERCEPT = 2
+
+Flag-carry steps by current role:
+  ATTACK = 0
+  DEFEND = 0
+  INTERCEPT = 0
+
+Role switches by blue worker:
+  agent_0 = 0
+  agent_1 = 0
+  agent_2 = 109
+
+Commander reasons:
+  RESET_DEFAULT = 600
+
+Commander config usage:

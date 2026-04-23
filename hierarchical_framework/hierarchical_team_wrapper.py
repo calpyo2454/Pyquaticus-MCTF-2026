@@ -245,7 +245,20 @@ class HierarchicalTeamWrapper:
         self.max_time = int(max_time)
         self.shape_blue_worker_rewards = bool(shape_blue_worker_rewards)
 
-        self.scripted_commander = ScriptedCommander(self.blue_team, self.red_team)
+        #self.scripted_commander = ScriptedCommander(self.blue_team, self.red_team)
+        self.blue_commander = ScriptedCommander(self.blue_team, self.red_team, home_side_idx=0)
+        self.red_commander = ScriptedCommander(self.red_team, self.blue_team, home_side_idx=1)
+
+        self.current_roles: Dict[str, int] = {}
+        for aid in self.blue_team:
+            self.current_roles[aid] = ATTACK
+        for aid in self.red_team:
+            self.current_roles[aid] = ATTACK
+
+        self.last_blue_config_index = None
+        self.last_blue_reason = "RESET_DEFAULT"
+        self.last_red_config_index = None
+        self.last_red_reason = "RESET_DEFAULT"
 
         self.possible_agents = list(getattr(base_env, "possible_agents", []))
         self.agents: List[str] = []
@@ -291,6 +304,7 @@ class HierarchicalTeamWrapper:
 
             self.action_spaces[aid] = self._base_act_space
         """
+
         for aid in self.possible_agents:
             low = np.full((self._base_obs_space.shape[0] + 3,), -np.inf, dtype=np.float32)
             high = np.full((self._base_obs_space.shape[0] + 3,), np.inf, dtype=np.float32)
@@ -345,28 +359,28 @@ class HierarchicalTeamWrapper:
 
     def _apply_scripted_roles(self):
         """
-        Refresh blue role assignments using the scripted commander.
-
-        Why this method exists:
-        - This is the heart of the scripted commander baseline.
-        - The wrapper calls it every role_period steps and at reset.
+        Refresh both blue and red role assignments using mirrored scripted commanders.
         """
         state = self._get_state()
         agents = list(getattr(self.base_env, "agents", self.blue_team + self.red_team))
-        assignments, config_index, reason = self.scripted_commander.assign_roles(state, agents)
 
-        prev_blue_roles = {aid: self.current_roles[aid] for aid in self.blue_team}
-        assignments, config_index, reason = self.scripted_commander.assign_roles(state, agents)
-        role_changed = assignments != prev_blue_roles
+        blue_assignments, blue_config_index, blue_reason = self.blue_commander.assign_roles(state, agents)
+        red_assignments, red_config_index, red_reason = self.red_commander.assign_roles(state, agents)
+
+        prev_blue_roles = {aid: self.current_roles.get(aid, ATTACK) for aid in self.blue_team}
+        role_changed = blue_assignments != prev_blue_roles
 
         for aid in self.blue_team:
-            self.current_roles[aid] = int(assignments[aid])
+            self.current_roles[aid] = int(blue_assignments[aid])
+        for aid in self.red_team:
+            self.current_roles[aid] = int(red_assignments[aid])
 
-        self.last_config_index = config_index
-        self.last_reason = reason
+        self.last_blue_config_index = blue_config_index
+        self.last_blue_reason = blue_reason
+        self.last_red_config_index = red_config_index
+        self.last_red_reason = red_reason
         self.steps_since_role_update = 0
 
-        # Update macro reward tracking for logging/debugging.
         self.curr_macro_stats = extract_macro_stats_from_state(state)
         if self.prev_macro_stats:
             self.last_macro_reward = compute_macro_reward(
@@ -388,8 +402,7 @@ class HierarchicalTeamWrapper:
         - This makes both sides compatible with the same role-head worker model.
         """
         obs = np.asarray(obs, dtype=np.float32)
-        role_id = self.current_roles.get(agent_id, ATTACK)
-        role_vec = _role_one_hot(role_id)
+        role_vec = _role_one_hot(self.current_roles.get(agent_id, ATTACK))
         return np.concatenate([obs, role_vec], axis=0)
 
     def _build_debug_commander_observation(self) -> np.ndarray:
@@ -422,11 +435,23 @@ class HierarchicalTeamWrapper:
         - We also reset state tracking for reward shaping and commander logs.
         """
         obs, info = self.base_env.reset(seed=seed, options=options)
-
+        """
         self.current_roles = {aid: ATTACK for aid in self.blue_team}
         self.current_roles.update(self.static_red_roles)
         self.last_config_index = None
         self.last_reason = "RESET_DEFAULT"
+        """
+        self.current_roles = {}
+        for aid in self.blue_team:
+            self.current_roles[aid] = ATTACK
+        for aid in self.red_team:
+            self.current_roles[aid] = ATTACK
+
+        self.last_blue_config_index = None
+        self.last_blue_reason = "RESET_DEFAULT"
+        self.last_red_config_index = None
+        self.last_red_reason = "RESET_DEFAULT"
+        
         self.steps_since_role_update = 0
         self.elapsed_steps = 0
 
@@ -512,6 +537,12 @@ class HierarchicalTeamWrapper:
                 wrapped_info[aid]["commander_reason"] = self.last_reason
                 wrapped_info[aid]["commander_config_index"] = self.last_config_index
                 wrapped_info[aid]["commander_macro_reward"] = self.last_macro_reward
+
+            if aid in self.red_team:
+                wrapped_info[aid]["role_id"] = self.current_roles[aid]
+                wrapped_info[aid]["role_name"] = ROLE_NAMES[self.current_roles[aid]]
+                wrapped_info[aid]["commander_reason"] = self.last_red_reason
+                wrapped_info[aid]["commander_config_index"] = self.last_red_config_index
 
         self.prev_state = _deepcopy_state(state)
         self.agents = list(obs.keys())
