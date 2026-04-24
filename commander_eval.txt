@@ -1,0 +1,117 @@
+Loading frozen opponent from: /data/CS-491/Pyquaticus-MCTF-2026/hierarchical_checkpoints_roleheads
+  eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+  eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+  eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+[episode 1/10] blue_caps=0 red_caps=0 steps=600 role_switches={'agent_0': 16, 'agent_1': 25, 'agent_2': 31}
+  eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+  eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+  eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+[episode 2/10] blue_caps=0 red_caps=0 steps=600 role_switches={'agent_0': 39, 'agent_1': 32, 'agent_2': 18}
+  eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+  eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+  eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+[episode 3/10] blue_caps=0 red_caps=0 steps=600 role_switches={'agent_0': 42, 'agent_1': 34, 'agent_2': 32}
+  eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+  eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+  eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+[episode 4/10] blue_caps=0 red_caps=0 steps=600 role_switches={'agent_0': 46, 'agent_1': 37, 'agent_2': 27}
+  eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+  eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+  eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+[episode 5/10] blue_caps=0 red_caps=0 steps=600 role_switches={'agent_0': 10, 'agent_1': 26, 'agent_2': 19}
+  eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+  eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+  eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+[episode 6/10] blue_caps=0 red_caps=0 steps=600 role_switches={'agent_0': 6, 'agent_1': 14, 'agent_2': 16}
+  eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+  eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+  eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+[episode 7/10] blue_caps=0 red_caps=0 steps=600 role_switches={'agent_0': 28, 'agent_1': 45, 'agent_2': 29}
+  eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+  eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+  eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+[episode 8/10] blue_caps=0 red_caps=0 steps=600 role_switches={'agent_0': 19, 'agent_1': 32, 'agent_2': 38}
+  eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+  eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+  eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+[episode 9/10] blue_caps=0 red_caps=0 steps=600 role_switches={'agent_0': 50, 'agent_1': 41, 'agent_2': 26}
+  eval progress: step 200, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+  eval progress: step 400, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+  eval progress: step 600, active_agents=['agent_0', 'agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', 'blue_commander']
+[episode 10/10] blue_caps=0 red_caps=0 steps=600 role_switches={'agent_0': 40, 'agent_1': 36, 'agent_2': 28}
+
+=== EVALUATION SUMMARY ===
+Blue win count: 0 / 10
+
+Role usage by blue worker:
+  agent_0:
+    ATTACK = 3180 (53.0%)
+    DEFEND = 1225 (20.4%)
+    INTERCEPT = 1595 (26.6%)
+  agent_1:
+    ATTACK = 2565 (42.8%)
+    DEFEND = 1420 (23.7%)
+    INTERCEPT = 2015 (33.6%)
+  agent_2:
+    ATTACK = 3235 (53.9%)
+    DEFEND = 980 (16.3%)
+    INTERCEPT = 1785 (29.8%)
+
+Territory occupancy by blue worker:
+  agent_0:
+    home_side = 1249 (20.8%)
+    enemy_side = 4751 (79.2%)
+    unknown_side = 0 (0.0%)
+  agent_1:
+    home_side = 909 (15.2%)
+    enemy_side = 5091 (84.8%)
+    unknown_side = 0 (0.0%)
+  agent_2:
+    home_side = 1633 (27.2%)
+    enemy_side = 4367 (72.8%)
+    unknown_side = 0 (0.0%)
+
+Territory occupancy by current role:
+  ATTACK:
+    home_side = 3270 (36.4%)
+    enemy_side = 5710 (63.6%)
+    unknown_side = 0 (0.0%)
+  DEFEND:
+    home_side = 69 (1.9%)
+    enemy_side = 3556 (98.1%)
+    unknown_side = 0 (0.0%)
+  INTERCEPT:
+    home_side = 452 (8.4%)
+    enemy_side = 4943 (91.6%)
+    unknown_side = 0 (0.0%)
+
+Tags made by current role:
+  ATTACK = 18
+  DEFEND = 5
+  INTERCEPT = 8
+
+Flag-carry steps by current role:
+  ATTACK = 233
+  DEFEND = 0
+  INTERCEPT = 0
+
+Role switches by blue worker:
+  agent_0 = 296
+  agent_1 = 322
+  agent_2 = 264
+
+Commander reasons:
+  LEARNED_CONFIG_5 = 2955
+  LEARNED_CONFIG_0 = 830
+  LEARNED_CONFIG_2 = 690
+  LEARNED_CONFIG_3 = 615
+  LEARNED_CONFIG_1 = 575
+  LEARNED_CONFIG_4 = 335
+
+Commander config usage:
+  config 5 = 2955
+  config 0 = 830
+  config 2 = 690
+  config 3 = 615
+  config 1 = 575
+  config 4 = 335
