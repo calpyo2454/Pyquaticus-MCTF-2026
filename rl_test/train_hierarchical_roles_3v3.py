@@ -25,6 +25,112 @@ from hierarchical_framework.hierarchical_team_wrapper import (
 USE_FROZEN_OPPONENT = False
 
 
+import math
+
+
+def _find_entropy_by_policy(obj, prefix=""):
+    """
+    Recursively find numeric entropy fields and bucket them by policy name
+    if the path contains worker_policy or commander_policy.
+    """
+    found = {"worker_policy": [], "commander_policy": [], "other": []}
+
+    def walk(x, path=""):
+        if isinstance(x, dict):
+            for k, v in x.items():
+                child = f"{path}.{k}" if path else str(k)
+                key_lower = str(k).lower()
+
+                if "entropy" in key_lower and isinstance(v, (int, float)):
+                    if "worker_policy" in child:
+                        found["worker_policy"].append((child, float(v)))
+                    elif "commander_policy" in child:
+                        found["commander_policy"].append((child, float(v)))
+                    else:
+                        found["other"].append((child, float(v)))
+
+                walk(v, child)
+
+        elif isinstance(x, (list, tuple)):
+            for i, v in enumerate(x):
+                walk(v, f"{path}[{i}]")
+
+    walk(obj, prefix)
+    return found
+
+
+def _normalized_entropy(entropy_value: float | None, action_space_n: int | None):
+    if entropy_value is None or action_space_n is None or action_space_n <= 1:
+        return None
+    return float(entropy_value / math.log(action_space_n))
+
+def _find_first_metric(obj, target_keys, prefix=""):
+    """
+    Recursively search a nested dict/list structure for the first numeric value
+    whose key matches one of target_keys.
+    Returns (path, value) or (None, None).
+    """
+    target_keys = {str(k).lower() for k in target_keys}
+
+    def walk(x, path=""):
+        if isinstance(x, dict):
+            for k, v in x.items():
+                child = f"{path}.{k}" if path else str(k)
+                key_lower = str(k).lower()
+
+                if key_lower in target_keys and isinstance(v, (int, float)):
+                    return child, float(v)
+
+                found_path, found_value = walk(v, child)
+                if found_path is not None:
+                    return found_path, found_value
+
+        elif isinstance(x, (list, tuple)):
+            for i, v in enumerate(x):
+                child = f"{path}[{i}]"
+                found_path, found_value = walk(v, child)
+                if found_path is not None:
+                    return found_path, found_value
+
+        return None, None
+
+    return walk(obj, prefix)
+
+
+def _extract_training_metrics(result):
+    """
+    Robustly pull reward/return/episode metrics from an RLlib result dict.
+    """
+    reward_mean_path, reward_mean = _find_first_metric(
+        result, {"episode_reward_mean", "episode_return_mean"}
+    )
+    reward_min_path, reward_min = _find_first_metric(
+        result, {"episode_reward_min", "episode_return_min"}
+    )
+    reward_max_path, reward_max = _find_first_metric(
+        result, {"episode_reward_max", "episode_return_max"}
+    )
+    ep_len_mean_path, ep_len_mean = _find_first_metric(
+        result, {"episode_len_mean"}
+    )
+    episodes_this_iter_path, episodes_this_iter = _find_first_metric(
+        result, {"episodes_this_iter", "num_episodes"}
+    )
+
+    return {
+        "reward_mean": reward_mean,
+        "reward_mean_path": reward_mean_path,
+        "reward_min": reward_min,
+        "reward_min_path": reward_min_path,
+        "reward_max": reward_max,
+        "reward_max_path": reward_max_path,
+        "ep_len_mean": ep_len_mean,
+        "ep_len_mean_path": ep_len_mean_path,
+        "episodes_this_iter": episodes_this_iter,
+        "episodes_this_iter_path": episodes_this_iter_path,
+    }
+
+
 class RandPolicy(Policy):
     def __init__(self, observation_space, action_space, config):
         super().__init__(observation_space, action_space, config)
@@ -86,6 +192,7 @@ def main():
     parser.add_argument("--train-mode", choices=["worker", "commander", "joint"], default="worker")
     parser.add_argument("--frozen-worker-checkpoint", type=str, default="./hierarchical_checkpoints_vs_frozen")
     parser.add_argument("--frozen-opponent-checkpoint", type=str, default=None)
+    parser.add_argument("--entropy-coeff", type=float, default=0.003)
     args = parser.parse_args()
 
     global USE_FROZEN_OPPONENT
@@ -169,7 +276,7 @@ def main():
         .framework("torch")
         .debugging(log_level="ERROR")
         .training(train_batch_size=4500, minibatch_size=512, num_epochs=8, lr=3e-4,
-                  gamma=0.995, lambda_=0.98, clip_param=0.2, entropy_coeff=0.003, vf_loss_coeff=1.0)
+                  gamma=0.995, lambda_=0.98, clip_param=0.2, entropy_coeff=args.entropy_coeff, vf_loss_coeff=1.0)
         .multi_agent(policies=policies, policy_mapping_fn=policy_mapping_fn, policies_to_train=policies_to_train)
     )
 
@@ -205,21 +312,63 @@ def main():
     for i in range(args.iterations):
         iter_start = time.perf_counter()
         result = algo.train()
+        
+        entropy_by_policy = _find_entropy_by_policy(result)
+
+        worker_entropy = (
+            entropy_by_policy["worker_policy"][0][1]
+            if entropy_by_policy["worker_policy"] else None
+        )
+        commander_entropy = (
+            entropy_by_policy["commander_policy"][0][1]
+            if entropy_by_policy["commander_policy"] else None
+        )
+
+        worker_action_n = getattr(worker_act_space, "n", None)
+        commander_action_n = len(ROLE_CONFIGS) if args.train_mode in {"commander", "joint"} else None
+
+        worker_entropy_norm = _normalized_entropy(worker_entropy, worker_action_n)
+        commander_entropy_norm = _normalized_entropy(commander_entropy, commander_action_n)
+        
         iter_end = time.perf_counter()
         iteration_times.append(iter_end - iter_start)
+
+        metrics = _extract_training_metrics(result)
 
         if i == 0:
             print("top-level result keys:", sorted(result.keys()))
             print("env_runners keys:", sorted(result.get("env_runners", {}).keys()))
+            print(
+                "metric paths found:",
+                {
+                    "reward_mean": metrics["reward_mean_path"],
+                    "reward_min": metrics["reward_min_path"],
+                    "reward_max": metrics["reward_max_path"],
+                    "ep_len_mean": metrics["ep_len_mean_path"],
+                    "episodes_this_iter": metrics["episodes_this_iter_path"],
+                },
+            )
+            print("worker entropy keys:", entropy_by_policy["worker_policy"])
+            print("commander entropy keys:", entropy_by_policy["commander_policy"])
+            print("other entropy keys:", entropy_by_policy["other"])
 
         if i % 10 == 0:
-            env_runner_metrics = result.get("env_runners", {})
-            reward_mean = env_runner_metrics.get("episode_reward_mean", env_runner_metrics.get("episode_return_mean", None))
-            reward_min = env_runner_metrics.get("episode_reward_min", None)
-            reward_max = env_runner_metrics.get("episode_reward_max", None)
-            ep_len_mean = env_runner_metrics.get("episode_len_mean", None)
-            episodes_this_iter = result.get("episodes_this_iter", None)
-            print(f"[iter {i}] reward_mean={reward_mean} reward_min={reward_min} reward_max={reward_max} ep_len_mean={ep_len_mean} episodes_this_iter={episodes_this_iter}")
+            print(
+                f"[iter {i}] "
+                f"reward_mean={metrics['reward_mean']} "
+                f"reward_min={metrics['reward_min']} "
+                f"reward_max={metrics['reward_max']} "
+                f"ep_len_mean={metrics['ep_len_mean']} "
+                f"episodes_this_iter={metrics['episodes_this_iter']}"
+            )
+
+            print(
+                f"[iter {i}] "
+                f"worker_entropy={worker_entropy} "
+                f"worker_entropy_norm={worker_entropy_norm} "
+                f"commander_entropy={commander_entropy} "
+                f"commander_entropy_norm={commander_entropy_norm}"
+            )
 
         if i > 0 and i % args.checkpoint_every == 0:
             save_result = algo.save(args.save_dir)

@@ -89,10 +89,10 @@ def policy_mapping_fn(agent_id, episode, **kwargs):
 
 def build_env_config(role_period: int, render_mode: str, use_learned_commander: bool):
     config_dict = config_dict_std.copy()
-    config_dict["sim_speedup_factor"] = 1
+    config_dict["sim_speedup_factor"] = 6
     config_dict["max_score"] = 3
     config_dict["max_time"] = 240
-    config_dict["tagging_cooldown"] = 60
+    config_dict["tagging_cooldown"] = 45
     config_dict["tag_on_oob"] = True
     return {
         "config_dict": config_dict,
