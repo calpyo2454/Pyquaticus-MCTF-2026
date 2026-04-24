@@ -1,30 +1,15 @@
 """
 hierarchical_framework/commander_rewards.py
-
-Purpose of this module:
-- Provide commander-oriented reward/statistic helpers.
-
-Why this file still matters during scripted baseline:
-- The scripted commander is not trainable yet, but you still want to:
-    1) track commander-level team progress,
-    2) log macro metrics,
-    3) reuse the same reward/stat logic later for a learned commander.
 """
 
 from __future__ import annotations
 
 from typing import Dict
 
+from hierarchical_framework.commander_action import ROLE_CONFIGS
+
 
 def extract_macro_stats_from_state(state: dict) -> Dict[str, float]:
-    """
-    Extract commander-level macro statistics from environment state.
-
-    Why this method exists:
-    - The commander cares about team-level outcomes like captures and grabs,
-      not low-level primitive movement.
-    - The wrapper can call this each step and compare deltas over time.
-    """
     return {
         "blue_captures": float(state["captures"][0]),
         "red_captures": float(state["captures"][1]),
@@ -41,19 +26,6 @@ def compute_macro_reward(
     role_assignment_changed: bool,
     switch_penalty: float = 0.02,
 ) -> float:
-    """
-    Compute a commander-style macro reward from stat deltas.
-
-    Why this method exists:
-    - Even during scripted baseline, a macro reward is useful for logs and
-      later learned-commander work.
-    - The reward focuses on team outcomes:
-        + captures and grabs for blue
-        - captures and grabs for red
-        + tags for blue
-        - tags for red
-        - mild penalty when role assignment changes too often
-    """
     r = 0.0
     r += 1.00 * (current_stats["blue_captures"] - previous_stats["blue_captures"])
     r -= 1.00 * (current_stats["red_captures"] - previous_stats["red_captures"])
@@ -61,8 +33,58 @@ def compute_macro_reward(
     r -= 0.30 * (current_stats["red_grabs"] - previous_stats["red_grabs"])
     r += 0.05 * (current_stats["blue_tags"] - previous_stats["blue_tags"])
     r -= 0.05 * (current_stats["red_tags"] - previous_stats["red_tags"])
-
     if role_assignment_changed:
         r -= switch_penalty
+    return float(r)
+
+
+def compute_commander_reward(prev_state: dict, state: dict, team_idx: int, chosen_config_idx: int) -> float:
+    r = 0.0
+    opp = 1 - team_idx
+    config = ROLE_CONFIGS[int(chosen_config_idx)]
+
+    own_attackers = sum(1 for x in config if x == 0)
+    own_defenders = sum(1 for x in config if x == 1)
+    own_interceptors = sum(1 for x in config if x == 2)
+
+    if state["captures"][team_idx] > prev_state["captures"][team_idx]:
+        r += 20.0
+    if state["captures"][opp] > prev_state["captures"][opp]:
+        r -= 20.0
+
+    if state["grabs"][team_idx] > prev_state["grabs"][team_idx]:
+        r += 6.0
+    if state["grabs"][opp] > prev_state["grabs"][opp]:
+        r -= 6.0
+
+    enemy_pressure = 0
+    own_pressure = 0
+    half = len(state["agent_on_sides"]) // 2
+    my_idxs = range(0, half) if team_idx == 0 else range(half, len(state["agent_on_sides"]))
+    enemy_idxs = range(half, len(state["agent_on_sides"])) if team_idx == 0 else range(0, half)
+
+    for idx in enemy_idxs:
+        if int(state["agent_on_sides"][idx]) == team_idx:
+            enemy_pressure += 1
+    for idx in my_idxs:
+        if int(state["agent_on_sides"][idx]) == opp:
+            own_pressure += 1
+
+    if enemy_pressure >= 2:
+        if own_defenders + own_interceptors >= 2:
+            r += 1.0
+        else:
+            r -= 1.0
+
+    if own_pressure >= 2 and enemy_pressure == 0:
+        if own_attackers >= 1:
+            r += 0.6
+
+    enemy_has_flag = any(state["agent_has_flag"][idx] for idx in enemy_idxs)
+    if enemy_has_flag:
+        if own_interceptors >= 1:
+            r += 0.8
+        else:
+            r -= 0.8
 
     return float(r)
