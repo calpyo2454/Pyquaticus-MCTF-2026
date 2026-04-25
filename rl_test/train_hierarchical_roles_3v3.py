@@ -300,8 +300,11 @@ def main():
 
     # Resume whole run first, then re-freeze worker/opponent as needed.
     if args.checkpoint:
-        print(f"Restoring from checkpoint: {args.checkpoint}")
-        algo.restore(args.checkpoint)
+        checkpoint_path = os.path.abspath(args.checkpoint)
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(checkpoint_path)
+        print(f"Restoring from checkpoint: {checkpoint_path}")
+        algo.restore(checkpoint_path)
 
     if args.train_mode == "commander":
         frozen_worker_path = os.path.abspath(args.frozen_worker_checkpoint)
