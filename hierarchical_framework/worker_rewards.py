@@ -204,6 +204,9 @@ def attacker_reward(agent_id, team, agents, state, prev_state) -> float:
 
     dist_to_enemy_flag = _distance(current_pos, enemy_flag_pos)
     prev_dist_to_enemy_flag = _distance(prev_pos, enemy_flag_pos)
+    dist_to_own_flag = _distance(current_pos, own_flag_pos)
+    prev_dist_to_own_flag = _distance(prev_pos, own_flag_pos)
+
     if dist_to_enemy_flag < 0.60 and prev_dist_to_enemy_flag >= 0.60:
         reward += 0.35
     if dist_to_enemy_flag < 0.40 and prev_dist_to_enemy_flag >= 0.40:
@@ -212,25 +215,73 @@ def attacker_reward(agent_id, team, agents, state, prev_state) -> float:
         reward += 1.75
 
     if has_flag and not prev_has_flag:
-        reward += 8.0
+        reward += 12.0
+
     if has_flag and _on_home_side(x, state, t) and _on_enemy_side(prev_x, prev_state, t):
-        reward += 5.0
+        reward += 12.0
+
     if (not has_flag) and _on_home_side(x, state, t) and _on_enemy_side(prev_x, prev_state, t):
         reward -= 1.5
+
+    # Very close pickup-zone commitment.
+    if dist_to_enemy_flag < 0.12 and prev_dist_to_enemy_flag >= 0.12:
+        reward += 2.5
+
+    # Punish backing out of the pickup zone without grabbing.
+    if (not has_flag) and prev_dist_to_enemy_flag < 0.12 and dist_to_enemy_flag >= 0.12:
+        reward -= 2.0
+
+    # Mild bonus to keep pressing if already very near the flag.
+    if (not has_flag) and dist_to_enemy_flag < 0.12:
+        reward += 0.15
 
     nearest_enemy_idx = _nearest_enemy_idx(t, agents, state, current_pos)
     if nearest_enemy_idx is not None:
         enemy_pos = _get_agent_position(state, nearest_enemy_idx)
         enemy_dist = _distance(current_pos, enemy_pos)
         enemy_ready = _tag_ready_frac(state, nearest_enemy_idx)
+
         if enemy_dist < 0.35:
-            if enemy_ready < 0.35:
-                reward += 0.25
-            elif enemy_ready > 0.80:
-                reward -= 0.30
+            if has_flag:
+                if enemy_ready < 0.35:
+                    reward += 0.60
+                elif enemy_ready > 0.80:
+                    reward -= 0.80
+            else:
+                if enemy_ready < 0.35:
+                    reward += 0.75
+                elif enemy_ready > 0.80:
+                    reward -= 0.60
+
+        # If the flag is effectively unprotected, strongly encourage the grab.
+        if (not has_flag) and dist_to_enemy_flag < 0.15 and enemy_dist > 0.30:
+            reward += 1.5
 
     if has_flag:
-        reward += 0.18 * _distance_progress(prev_pos, current_pos, own_flag_pos)
+        home_progress = _distance_progress(prev_pos, current_pos, own_flag_pos)
+
+        # Make return-home progress dominant.
+        reward += 1.60 * home_progress
+
+        # Strongly punish moving away from home while carrying.
+        if home_progress < 0:
+            reward += 2.50 * home_progress
+
+        # Penalize making no meaningful homeward progress, even if moving in circles.
+        if abs(home_progress) < 0.01:
+            reward -= 0.20
+
+        # Strong anti-spin / anti-hover penalty while carrying.
+        if _distance(current_pos, prev_pos) < 0.025:
+            reward -= 0.45
+
+        # Carrying milestones.
+        if dist_to_own_flag < 0.60 and prev_dist_to_own_flag >= 0.60:
+            reward += 2.0
+        if dist_to_own_flag < 0.40 and prev_dist_to_own_flag >= 0.40:
+            reward += 3.0
+        if dist_to_own_flag < 0.25 and prev_dist_to_own_flag >= 0.25:
+            reward += 4.0
 
     if _distance(current_pos, prev_pos) < 0.015:
         reward -= 0.03
@@ -240,6 +291,12 @@ def attacker_reward(agent_id, team, agents, state, prev_state) -> float:
         reward -= 0.15
     if bool(_safe_get_array_value(state, "agent_oob", i, False)) and not bool(_safe_get_array_value(prev_state, "agent_oob", i, False)):
         reward -= 1.25
+
+    # Local capture reward for the carrier role.
+    if "captures" in state and "captures" in prev_state:
+        if state["captures"][t] > prev_state["captures"][t]:
+            reward += 15.0
+
     return float(reward)
 
 

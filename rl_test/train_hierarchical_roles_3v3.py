@@ -197,6 +197,8 @@ def main():
     parser.add_argument("--frozen-opponent-checkpoint", type=str, default=None)
     parser.add_argument("--use-learned-opponent-commander", action="store_true")
     parser.add_argument("--entropy-coeff", type=float, default=0.003)
+    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--worker-only-finetune", action="store_true")
     
     args = parser.parse_args()
 
@@ -220,7 +222,7 @@ def main():
         "team_size": 3,
         "role_period": args.role_period,
         "shape_blue_worker_rewards": True,
-        "use_learned_commander": args.train_mode in {"commander", "joint"},
+        "use_learned_commander": (args.train_mode in {"commander", "joint"}) or args.worker_only_finetune,
         "use_learned_opponent_commander": args.use_learned_opponent_commander,
         "commander_team": "blue",
     }
@@ -276,7 +278,9 @@ def main():
     if not ray.is_initialized():
         ray.init(ignore_reinit_error=True)
 
-    if args.train_mode == "worker":
+    if args.worker_only_finetune:
+        policies_to_train = ["worker_policy"]
+    elif args.train_mode == "worker":
         policies_to_train = ["worker_policy"]
     elif args.train_mode == "commander":
         policies_to_train = ["commander_policy"]
@@ -291,7 +295,7 @@ def main():
         .resources(num_gpus=0, num_cpus_for_main_process=1)
         .framework("torch")
         .debugging(log_level="ERROR")
-        .training(train_batch_size=4500, minibatch_size=512, num_epochs=8, lr=3e-4,
+        .training(train_batch_size=4500, minibatch_size=512, num_epochs=8, lr=args.lr,
                   gamma=0.995, lambda_=0.98, clip_param=0.2, entropy_coeff=args.entropy_coeff, vf_loss_coeff=1.0)
         .multi_agent(policies=policies, policy_mapping_fn=policy_mapping_fn, policies_to_train=policies_to_train)
     )
