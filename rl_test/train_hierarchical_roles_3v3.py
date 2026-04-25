@@ -23,6 +23,7 @@ from hierarchical_framework.hierarchical_team_wrapper import (
 )
 
 USE_FROZEN_OPPONENT = False
+USE_LEARNED_OPPONENT_COMMANDER = False
 
 
 import math
@@ -176,6 +177,8 @@ def env_creator(env_config):
 def policy_mapping_fn(agent_id, episode, **kwargs):
     if agent_id == "blue_commander":
         return "commander_policy"
+    if agent_id == "red_commander" and USE_LEARNED_OPPONENT_COMMANDER:
+        return "opponent_commander_policy"
     if agent_id in ["agent_0", "agent_1", "agent_2"]:
         return "worker_policy"
     return "opponent_policy" if USE_FROZEN_OPPONENT else "random_policy"
@@ -192,11 +195,14 @@ def main():
     parser.add_argument("--train-mode", choices=["worker", "commander", "joint"], default="worker")
     parser.add_argument("--frozen-worker-checkpoint", type=str, default="./hierarchical_checkpoints_vs_frozen")
     parser.add_argument("--frozen-opponent-checkpoint", type=str, default=None)
+    parser.add_argument("--use-learned-opponent-commander", action="store_true")
     parser.add_argument("--entropy-coeff", type=float, default=0.003)
+    
     args = parser.parse_args()
 
-    global USE_FROZEN_OPPONENT
+    global USE_FROZEN_OPPONENT, USE_LEARNED_OPPONENT_COMMANDER
     USE_FROZEN_OPPONENT = args.frozen_opponent_checkpoint is not None
+    USE_LEARNED_OPPONENT_COMMANDER = args.use_learned_opponent_commander
 
     logging.basicConfig(level=logging.ERROR)
     os.makedirs(args.save_dir, exist_ok=True)
@@ -215,6 +221,7 @@ def main():
         "role_period": args.role_period,
         "shape_blue_worker_rewards": True,
         "use_learned_commander": args.train_mode in {"commander", "joint"},
+        "use_learned_opponent_commander": args.use_learned_opponent_commander,
         "commander_team": "blue",
     }
 
@@ -227,6 +234,7 @@ def main():
     red_obs_space = raw_env.observation_spaces["agent_3"]
     red_act_space = raw_env.action_spaces["agent_3"]
     commander_obs_space = raw_env.observation_spaces.get("blue_commander")
+    opponent_commander_obs_space = raw_env.observation_spaces.get("red_commander")
     raw_env.close()
 
     policies = {
@@ -253,6 +261,14 @@ def main():
         policies["commander_policy"] = (
             None,
             commander_obs_space,
+            gym.spaces.Discrete(len(ROLE_CONFIGS)),
+            {"model": {"fcnet_hiddens": [256, 256], "fcnet_activation": "relu"}},
+        )
+
+    if env_config.get("use_learned_opponent_commander", False):
+        policies["opponent_commander_policy"] = (
+            None,
+            opponent_commander_obs_space,
             gym.spaces.Discrete(len(ROLE_CONFIGS)),
             {"model": {"fcnet_hiddens": [256, 256], "fcnet_activation": "relu"}},
         )
@@ -301,10 +317,26 @@ def main():
         frozen_path = os.path.abspath(args.frozen_opponent_checkpoint)
         if not os.path.exists(frozen_path):
             raise FileNotFoundError(frozen_path)
+
         print(f"Loading frozen opponent from: {frozen_path}")
         frozen_algo = algo_config.build()
         frozen_algo.restore(frozen_path)
-        algo.get_policy("opponent_policy").set_weights(frozen_algo.get_policy("worker_policy").get_weights())
+
+        # Freeze red worker from the checkpoint's worker policy.
+        algo.get_policy("opponent_policy").set_weights(
+            frozen_algo.get_policy("worker_policy").get_weights()
+        )
+
+        # Optionally freeze red commander from the checkpoint's commander policy.
+        if args.use_learned_opponent_commander:
+            try:
+                algo.get_policy("opponent_commander_policy").set_weights(
+                    frozen_algo.get_policy("commander_policy").get_weights()
+                )
+                print("Loaded frozen opponent commander from checkpoint commander_policy")
+            except Exception as e:
+                print(f"Warning: could not load opponent commander weights: {e}")
+
         frozen_algo.stop()
 
     training_loop_start = time.perf_counter()

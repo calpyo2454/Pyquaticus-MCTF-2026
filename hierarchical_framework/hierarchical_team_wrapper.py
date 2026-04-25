@@ -164,6 +164,11 @@ class HierarchicalTeamWrapper:
         self.commander_team = self.env_config.get("commander_team", "blue")
         self.commander_agent_id = "blue_commander"
 
+        self.use_learned_opponent_commander = bool(
+            self.env_config.get("use_learned_opponent_commander", False)
+        )
+        self.opponent_commander_agent_id = "red_commander"
+
         self.blue_commander = ScriptedCommander(self.blue_team, self.red_team, home_side_idx=0)
         self.red_commander = ScriptedCommander(self.red_team, self.blue_team, home_side_idx=1)
 
@@ -201,6 +206,14 @@ class HierarchicalTeamWrapper:
                 dtype=np.float32,
             )
             self.action_spaces[self.commander_agent_id] = gym.spaces.Discrete(len(ROLE_CONFIGS))
+        if self.use_learned_opponent_commander:
+            self.observation_spaces[self.opponent_commander_agent_id] = gym.spaces.Box(
+                low=-np.inf,
+                high=np.inf,
+                shape=(self.commander_observation_length,),
+                dtype=np.float32,
+            )
+            self.action_spaces[self.opponent_commander_agent_id] = gym.spaces.Discrete(len(ROLE_CONFIGS))
 
     def _infer_base_observation_space(self):
         if hasattr(self.base_env, "observation_spaces") and "agent_0" in self.base_env.observation_spaces:
@@ -314,6 +327,7 @@ class HierarchicalTeamWrapper:
 
         return guarded
 
+    '''
     def _apply_scripted_roles(self):
         state = self._get_state()
         agents = list(getattr(self.base_env, "agents", self.blue_team + self.red_team))
@@ -336,7 +350,11 @@ class HierarchicalTeamWrapper:
         else:
             self.last_macro_reward = 0.0
         self.prev_macro_stats = dict(self.curr_macro_stats)
+        '''
+    def _apply_scripted_roles(self):
+        self._refresh_roles()
 
+    '''
     def _apply_learned_blue_roles(self, commander_action: int):
         state = self._get_state()
         agents = list(getattr(self.base_env, "agents", self.blue_team + self.red_team))
@@ -363,6 +381,12 @@ class HierarchicalTeamWrapper:
         else:
             self.last_macro_reward = 0.0
         self.prev_macro_stats = dict(self.curr_macro_stats)
+        '''
+    def _apply_learned_blue_roles(self, commander_action: int):
+        self._refresh_roles(blue_commander_action=int(commander_action))
+
+    def _apply_learned_red_roles(self, commander_action: int):
+        self._refresh_roles(red_commander_action=int(commander_action))
 
     def _augment_worker_observation(self, agent_id: str, obs: np.ndarray) -> np.ndarray:
         obs = np.asarray(obs, dtype=np.float32)
@@ -407,6 +431,11 @@ class HierarchicalTeamWrapper:
         if self.use_learned_commander and self.commander_team == "blue":
             wrapped_obs[self.commander_agent_id] = build_commander_observation(self._get_state(), self.base_env.agents, 0, max_time=self.max_time)
             wrapped_info[self.commander_agent_id] = {}
+        if self.use_learned_opponent_commander:
+            wrapped_obs[self.opponent_commander_agent_id] = build_commander_observation(
+                self._get_state(), self.base_env.agents, 1, max_time=self.max_time
+            )
+            wrapped_info[self.opponent_commander_agent_id] = {}
 
         self.agents = list(wrapped_obs.keys())
         return wrapped_obs, wrapped_info
@@ -416,12 +445,16 @@ class HierarchicalTeamWrapper:
         commander_action = None
         if self.use_learned_commander and self.commander_agent_id in action_dict:
             commander_action = int(action_dict.pop(self.commander_agent_id))
+        
+        opponent_commander_action = None
+        if self.use_learned_opponent_commander and self.opponent_commander_agent_id in action_dict:
+            opponent_commander_action = int(action_dict.pop(self.opponent_commander_agent_id))
 
         if self.steps_since_role_update % self.role_period == 0:
-            if self.use_learned_commander and self.commander_team == "blue" and commander_action is not None:
-                self._apply_learned_blue_roles(commander_action)
-            else:
-                self._apply_scripted_roles()
+            self._refresh_roles(
+                blue_commander_action=commander_action if (self.use_learned_commander and self.commander_team == "blue") else None,
+                red_commander_action=opponent_commander_action if self.use_learned_opponent_commander else None,
+            )
 
         pre_step_state = _deepcopy_state(self._get_state())
         action_dict = self._apply_boundary_guard(action_dict, pre_step_state)
@@ -473,6 +506,20 @@ class HierarchicalTeamWrapper:
                 "commander_config_index": self.last_blue_config_index,
                 "commander_reason": self.last_blue_reason,
             }
+        
+        if self.use_learned_opponent_commander:
+            wrapped_obs[self.opponent_commander_agent_id] = build_commander_observation(
+                state, self.base_env.agents, 1, max_time=self.max_time
+            )
+            wrapped_rewards[self.opponent_commander_agent_id] = compute_commander_reward(
+                self.prev_state, state, 1, self.last_red_config_index or 0
+            )
+            wrapped_terminated[self.opponent_commander_agent_id] = bool(terminated.get("__all__", False))
+            wrapped_truncated[self.opponent_commander_agent_id] = bool(truncated.get("__all__", False))
+            wrapped_info[self.opponent_commander_agent_id] = {
+                "commander_config_index": self.last_red_config_index,
+                "commander_reason": self.last_red_reason,
+            }
 
         self.prev_state = _deepcopy_state(state)
         self.agents = list(wrapped_obs.keys())
@@ -489,3 +536,57 @@ class HierarchicalTeamWrapper:
 
     def close(self):
         return self.base_env.close()
+    
+    def _refresh_roles(self, blue_commander_action: int | None = None, red_commander_action: int | None = None):
+        state = self._get_state()
+        agents = list(getattr(self.base_env, "agents", self.blue_team + self.red_team))
+
+        # Blue assignment
+        if (
+            self.use_learned_commander
+            and self.commander_team == "blue"
+            and blue_commander_action is not None
+            and hasattr(self.blue_commander, "assign_roles_from_config_index")
+        ):
+            blue_assignments, blue_reason = self.blue_commander.assign_roles_from_config_index(
+                state, agents, int(blue_commander_action)
+            )
+            blue_config_index = int(blue_commander_action)
+        else:
+            blue_assignments, blue_config_index, blue_reason = self.blue_commander.assign_roles(state, agents)
+
+        # Red assignment
+        if (
+            self.use_learned_opponent_commander
+            and red_commander_action is not None
+            and hasattr(self.red_commander, "assign_roles_from_config_index")
+        ):
+            red_assignments, red_reason = self.red_commander.assign_roles_from_config_index(
+                state, agents, int(red_commander_action)
+            )
+            red_config_index = int(red_commander_action)
+        else:
+            red_assignments, red_config_index, red_reason = self.red_commander.assign_roles(state, agents)
+
+        prev_blue_roles = {aid: self.current_roles.get(aid, ATTACK) for aid in self.blue_team}
+        role_changed = blue_assignments != prev_blue_roles
+
+        for aid in self.blue_team:
+            self.current_roles[aid] = int(blue_assignments[aid])
+        for aid in self.red_team:
+            self.current_roles[aid] = int(red_assignments[aid])
+
+        self.last_blue_config_index = blue_config_index
+        self.last_blue_reason = blue_reason if blue_reason else "LEARNED_POLICY"
+        self.last_red_config_index = red_config_index
+        self.last_red_reason = red_reason if red_reason else "LEARNED_POLICY"
+
+        self.steps_since_role_update = 0
+        self.curr_macro_stats = extract_macro_stats_from_state(state)
+        if self.prev_macro_stats:
+            self.last_macro_reward = compute_macro_reward(
+                self.prev_macro_stats, self.curr_macro_stats, role_changed
+            )
+        else:
+            self.last_macro_reward = 0.0
+        self.prev_macro_stats = dict(self.curr_macro_stats)
