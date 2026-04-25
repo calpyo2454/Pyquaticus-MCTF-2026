@@ -291,7 +291,7 @@ def main():
         PPOConfig()
         .api_stack(enable_rl_module_and_learner=False, enable_env_runner_and_connector_v2=False)
         .environment(env="pyquaticus_hierarchical_roles_3v3", env_config=env_config)
-        .env_runners(num_env_runners=3, num_cpus_per_env_runner=1, num_envs_per_env_runner=1, rollout_fragment_length=300)
+        .env_runners(num_env_runners=4, num_cpus_per_env_runner=1, num_envs_per_env_runner=1, rollout_fragment_length=300)
         .resources(num_gpus=0, num_cpus_for_main_process=1)
         .framework("torch")
         .debugging(log_level="ERROR")
