@@ -18,6 +18,8 @@ from ray.rllib.algorithms.ppo import PPOConfig
 from ray.rllib.models import ModelCatalog
 from ray.rllib.policy.policy import Policy
 from ray.tune.registry import register_env
+import math
+import numpy as np
 
 from pyquaticus import pyquaticus_v0
 from pyquaticus.config import config_dict_std
@@ -104,6 +106,119 @@ def build_env_config(role_period: int, render_mode: str, use_learned_commander: 
         "commander_team": "blue",
     }
 
+
+# Matches gen_config.py ACTION_MAP:
+# 0..7   = speed 1.0, headings [180, 135, 90, 45, 0, -45, -90, -135]
+# 8..15  = speed 0.5, same headings
+# 16     = stop
+ACTION_MAP = []
+for spd in [1.0, 0.5]:
+    for hdg in range(180, -180, -45):
+        ACTION_MAP.append((spd, hdg))
+ACTION_MAP.append((0.0, 0.0))
+
+
+def _team_idx(agent_id: str) -> int:
+    idx = int(agent_id.split("_")[1])
+    return 0 if idx < 3 else 1
+
+
+def _unwrap_action(action):
+    if isinstance(action, tuple):
+        action = action[0]
+    if isinstance(action, np.generic):
+        return int(action.item())
+    if isinstance(action, np.ndarray):
+        if action.shape == ():
+            return int(action.item())
+        if action.size == 1:
+            return int(action.reshape(-1)[0])
+        raise ValueError(f"Expected scalar action, got array shape {action.shape}")
+    return int(action)
+
+
+def _get_raw_state(raw_env):
+    if hasattr(raw_env, "_get_state"):
+        return raw_env._get_state()
+    if hasattr(raw_env, "base_env") and hasattr(raw_env.base_env, "state"):
+        return raw_env.base_env.state
+    raise RuntimeError("Could not access raw state for carrier override")
+
+
+def _get_agent_order(raw_env):
+    if hasattr(raw_env, "base_env") and hasattr(raw_env.base_env, "agents"):
+        return list(raw_env.base_env.agents)
+    return [f"agent_{i}" for i in range(6)]
+
+
+def _carrier_override_active(raw_env, state, agent_id: str) -> bool:
+    # Only override blue team for the demo.
+    if agent_id not in ["agent_0", "agent_1", "agent_2"]:
+        return False
+
+    agents = _get_agent_order(raw_env)
+    i = agents.index(agent_id)
+
+    try:
+        has_flag = bool(state["agent_has_flag"][i])
+    except Exception:
+        has_flag = False
+
+    try:
+        is_tagged = bool(state["agent_is_tagged"][i])
+    except Exception:
+        is_tagged = False
+
+    return has_flag and not is_tagged
+
+
+def _angle_diff_deg(a: float, b: float) -> float:
+    d = (a - b + 180.0) % 360.0 - 180.0
+    return abs(d)
+
+
+def _desired_heading_deg(curr_pos, target_pos) -> float:
+    dx = float(target_pos[0] - curr_pos[0])
+    dy = float(target_pos[1] - curr_pos[1])
+    return math.degrees(math.atan2(dy, dx))
+
+
+def _closest_action_id(desired_heading: float, speed: float) -> int:
+    best_a = 16
+    best_err = float("inf")
+
+    for a, (spd, hdg) in enumerate(ACTION_MAP):
+        if a == 16:
+            continue
+        if abs(spd - speed) > 1e-6:
+            continue
+        err = _angle_diff_deg(desired_heading, hdg)
+        if err < best_err:
+            best_err = err
+            best_a = a
+
+    return best_a
+
+
+def _carrier_override_action(raw_env, state, agent_id: str) -> int:
+    """
+    Deterministic return-home controller for flag carriers.
+    Uses own-flag position as the home target and maps the desired heading
+    to the nearest discrete action in ACTION_MAP.
+    """
+    agents = _get_agent_order(raw_env)
+    i = agents.index(agent_id)
+    team_idx = _team_idx(agent_id)
+
+    curr_pos = np.asarray(state["agent_position"][i], dtype=np.float32)
+    own_flag = np.asarray(state["flag_position"][team_idx], dtype=np.float32)
+
+    dist_home = float(np.linalg.norm(curr_pos - own_flag))
+    desired_heading = _desired_heading_deg(curr_pos, own_flag)
+
+    # Use slower action when very close to home to reduce overshoot/spinning.
+    speed = 0.5 if dist_home < 12.0 else 1.0
+    return _closest_action_id(desired_heading, speed)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Deploy trained hierarchical PPO in rendered GUI")
@@ -193,18 +308,43 @@ if __name__ == "__main__":
     env = env_creator(render_env_config)
     obs, _ = env.reset()
     step = 0
+
+    # Small hysteresis so the carrier does not change its mind every frame.
+    override_last_action = {}
+    override_hold_steps = {}
+    OVERRIDE_HOLD = 3
     print("Starting deployment...")
 
     while True:
         actions = {}
+        state = _get_raw_state(env.par_env)
+
         for agent_id in obs.keys():
             if USE_LEARNED_COMMANDER and agent_id == "blue_commander":
-                actions[agent_id] = algo.compute_single_action(obs[agent_id], policy_id="commander_policy")
+                a = algo.compute_single_action(obs[agent_id], policy_id="commander_policy")
+                actions[agent_id] = _unwrap_action(a)
+
             elif agent_id in ["agent_0", "agent_1", "agent_2"]:
-                actions[agent_id] = algo.compute_single_action(obs[agent_id], policy_id="worker_policy")
+                if _carrier_override_active(env.par_env, state, agent_id):
+                    if override_hold_steps.get(agent_id, 0) > 0 and agent_id in override_last_action:
+                        actions[agent_id] = override_last_action[agent_id]
+                        override_hold_steps[agent_id] -= 1
+                    else:
+                        a = _carrier_override_action(env.par_env, state, agent_id)
+                        actions[agent_id] = a
+                        override_last_action[agent_id] = a
+                        override_hold_steps[agent_id] = OVERRIDE_HOLD
+                else:
+                    override_last_action.pop(agent_id, None)
+                    override_hold_steps.pop(agent_id, None)
+
+                    a = algo.compute_single_action(obs[agent_id], policy_id="worker_policy")
+                    actions[agent_id] = _unwrap_action(a)
+
             else:
                 if USE_FROZEN_OPPONENT:
-                    actions[agent_id] = algo.compute_single_action(obs[agent_id], policy_id="opponent_policy")
+                    a = algo.compute_single_action(obs[agent_id], policy_id="opponent_policy")
+                    actions[agent_id] = _unwrap_action(a)
                 else:
                     actions[agent_id] = env.par_env.action_space(agent_id).sample()
 
@@ -226,6 +366,8 @@ if __name__ == "__main__":
         if any(term.values()) or any(trunc.values()):
             obs, _ = env.reset()
             print(f"Episode ended at total step {step}")
+            override_last_action.clear()
+            override_hold_steps.clear()
 
     env.close()
     algo.stop()
