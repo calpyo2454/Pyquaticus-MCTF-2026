@@ -132,30 +132,7 @@ class HierarchicalTeamWrapper:
             16: 16,
         }
 
-        # Bias steering downward in world-frame y (use when too close to top edge).
-        self.turn_away_from_top_map = {
-            5: 11,
-            6: 10,
-            7: 8,
-            13: 10,
-            14: 8,
-            15: 8,
-            4: 10,
-            12: 16,
-        }
-
-        # Bias steering upward in world-frame y (use when too close to bottom edge).
-        self.turn_away_from_bottom_map = {
-            3: 13,
-            2: 14,
-            0: 15,
-            1: 15,
-            11: 14,
-            10: 15,
-            8: 15,
-            4: 14,
-            12: 16,
-        }
+        self.stop_action_id = 16
 
         
         self.env_config = env_config or {}
@@ -244,35 +221,15 @@ class HierarchicalTeamWrapper:
             if aid not in getattr(self.base_env, "agents", []):
                 continue
 
-            if not isinstance(action, (int, np.integer)):
-                # Continuous fallback.
-                try:
-                    i = self.base_env.agents.index(aid)
-                    x, y = map(float, state["agent_position"][i])
-
-                    has_flag = bool(state["agent_has_flag"][i]) if "agent_has_flag" in state else False
-                    soft_margin = self.carrier_boundary_margin if has_flag else self.boundary_margin
-
-                    a = np.array(action, dtype=np.float32).copy()
-                    if a.shape[0] >= 2:
-                        if x < soft_margin:
-                            a[0] = abs(a[0])
-                        if x > 1.0 - soft_margin:
-                            a[0] = -abs(a[0])
-                        if y < soft_margin:
-                            a[1] = abs(a[1])
-                        if y > 1.0 - soft_margin:
-                            a[1] = -abs(a[1])
-                        guarded[aid] = a
-                except Exception:
-                    pass
-                continue
-
-            a = int(action)
             i = self.base_env.agents.index(aid)
             x, y = map(float, state["agent_position"][i])
 
-            has_flag = bool(state["agent_has_flag"][i]) if "agent_has_flag" in state else False
+            has_flag = False
+            try:
+                has_flag = bool(state["agent_has_flag"][i])
+            except Exception:
+                pass
+
             soft_margin = self.carrier_boundary_margin if has_flag else self.boundary_margin
             hard_margin = self.boundary_hard_margin
 
@@ -297,32 +254,52 @@ class HierarchicalTeamWrapper:
             near_bottom_hard = y < hard_margin
             near_top_hard = y > 1.0 - hard_margin
 
-            # Soft zone: if motion is outward, reduce thrust.
-            if near_left_soft and dx < -0.001:
-                guarded[aid] = self.action_slowdown_map.get(a, 16)
-                continue
-            if near_right_soft and dx > 0.001:
-                guarded[aid] = self.action_slowdown_map.get(a, 16)
-                continue
-            if near_bottom_soft and dy < -0.001:
-                guarded[aid] = self.action_slowdown_map.get(a, 16)
-                continue
-            if near_top_soft and dy > 0.001:
-                guarded[aid] = self.action_slowdown_map.get(a, 16)
+            # Continuous-action fallback.
+            if not isinstance(action, (int, np.integer)):
+                try:
+                    a = np.array(action, dtype=np.float32).copy()
+                    if a.shape[0] >= 2:
+                        if near_left_soft:
+                            a[0] = abs(a[0])
+                        if near_right_soft:
+                            a[0] = -abs(a[0])
+                        if near_bottom_soft:
+                            a[1] = abs(a[1])
+                        if near_top_soft:
+                            a[1] = -abs(a[1])
+                        guarded[aid] = a
+                except Exception:
+                    pass
                 continue
 
-            # Hard zone: stronger intervention.
+            a = int(action)
+
+            # Hard zone first: if very near the edge and still moving outward, force stop.
             if near_left_hard and dx < -0.001:
-                guarded[aid] = 16
+                guarded[aid] = self.stop_action_id
                 continue
             if near_right_hard and dx > 0.001:
-                guarded[aid] = 16
+                guarded[aid] = self.stop_action_id
                 continue
             if near_bottom_hard and dy < -0.001:
-                guarded[aid] = self.turn_away_from_bottom_map.get(a, 16)
+                guarded[aid] = self.stop_action_id
                 continue
             if near_top_hard and dy > 0.001:
-                guarded[aid] = self.turn_away_from_top_map.get(a, 16)
+                guarded[aid] = self.stop_action_id
+                continue
+
+            # Soft zone second: if drifting outward but not yet in the hard zone, reduce speed.
+            if near_left_soft and dx < -0.001:
+                guarded[aid] = self.action_slowdown_map.get(a, self.stop_action_id)
+                continue
+            if near_right_soft and dx > 0.001:
+                guarded[aid] = self.action_slowdown_map.get(a, self.stop_action_id)
+                continue
+            if near_bottom_soft and dy < -0.001:
+                guarded[aid] = self.action_slowdown_map.get(a, self.stop_action_id)
+                continue
+            if near_top_soft and dy > 0.001:
+                guarded[aid] = self.action_slowdown_map.get(a, self.stop_action_id)
                 continue
 
         return guarded
